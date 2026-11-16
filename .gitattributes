@@ -1,0 +1,5 @@
+# Normalise line endings in the repository; binary samples stay as they are.
+* text=auto eol=lf
+*.xlsx binary
+*.parquet binary
+*.png binary

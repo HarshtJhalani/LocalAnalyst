@@ -1,0 +1,215 @@
+[
+  {
+    "dataset": "messy_sales",
+    "category": "aggregate",
+    "question": "What is the total revenue across all orders?",
+    "expected_sql": "SELECT SUM(total_sales) FROM messy_sales",
+    "expected_chart": "stat"
+  },
+  {
+    "dataset": "messy_sales",
+    "category": "aggregate",
+    "question": "How many different customers placed orders?",
+    "expected_sql": "SELECT COUNT(DISTINCT customer_name) FROM messy_sales",
+    "expected_chart": "stat"
+  },
+  {
+    "dataset": "messy_sales",
+    "category": "ranking",
+    "question": "Which region has the fewest orders?",
+    "expected_sql": "SELECT region FROM messy_sales GROUP BY region ORDER BY COUNT(*) ASC LIMIT 1",
+    "expected_chart": null
+  },
+  {
+    "dataset": "messy_sales",
+    "category": "group",
+    "question": "List the number of orders per product, highest first.",
+    "expected_sql": "SELECT product, COUNT(*) FROM messy_sales GROUP BY product",
+    "expected_chart": "bar"
+  },
+  {
+    "dataset": "messy_sales",
+    "category": "group",
+    "question": "What is the average number of units per order for each sales rep?",
+    "expected_sql": "SELECT sales_rep, AVG(units_sold) FROM messy_sales GROUP BY sales_rep",
+    "expected_chart": "bar"
+  },
+  {
+    "dataset": "messy_sales",
+    "category": "filter",
+    "question": "How many Laptop orders were paid?",
+    "expected_sql": "SELECT COUNT(*) FROM messy_sales WHERE product = 'Laptop' AND paid = 1",
+    "expected_chart": "stat"
+  },
+  {
+    "dataset": "messy_sales",
+    "category": "time",
+    "question": "How many orders were placed each month?",
+    "expected_sql": "SELECT strftime('%Y-%m', order_date), COUNT(*) FROM messy_sales GROUP BY 1",
+    "expected_chart": "line"
+  },
+  {
+    "dataset": "messy_sales",
+    "category": "aggregate",
+    "question": "What is the highest single order value?",
+    "expected_sql": "SELECT MAX(total_sales) FROM messy_sales",
+    "expected_chart": "stat"
+  },
+  {
+    "dataset": "messy_sales",
+    "category": "ranking",
+    "question": "Which customer bought the most Headphones by units?",
+    "expected_sql": "SELECT customer_name FROM messy_sales WHERE product = 'Headphones' GROUP BY customer_name ORDER BY SUM(units_sold) DESC LIMIT 1",
+    "expected_chart": null
+  },
+  {
+    "dataset": "messy_sales",
+    "category": "aggregate",
+    "question": "What share of orders were paid?",
+    "expected_sql": [
+      "SELECT AVG(paid) FROM messy_sales",
+      "SELECT AVG(paid) * 100 FROM messy_sales"
+    ],
+    "expected_chart": null
+  },
+  {
+    "dataset": "messy_sales",
+    "category": "statistics",
+    "question": "What is the 90th percentile of total sales?",
+    "expected_sql": "SELECT percentile_of(json_group_array(total_sales), 90) FROM messy_sales",
+    "expected_chart": "stat"
+  },
+  {
+    "dataset": "messy_sales",
+    "category": "nulls",
+    "question": "How many orders have notes?",
+    "expected_sql": "SELECT COUNT(*) FROM messy_sales WHERE notes IS NOT NULL",
+    "expected_chart": "stat"
+  },
+  {
+    "dataset": "messy_sales",
+    "category": "filter",
+    "question": "What is the average order value in New Delhi?",
+    "expected_sql": "SELECT AVG(total_sales) FROM messy_sales WHERE city = 'New Delhi'",
+    "expected_chart": "stat"
+  },
+  {
+    "dataset": "messy_sales",
+    "category": "ranking",
+    "question": "Which sales rep brought in the most revenue?",
+    "expected_sql": "SELECT sales_rep FROM messy_sales GROUP BY sales_rep ORDER BY SUM(total_sales) DESC LIMIT 1",
+    "expected_chart": null
+  },
+  {
+    "dataset": "messy_sales",
+    "category": "time",
+    "question": "What were the total units sold in March 2024?",
+    "expected_sql": "SELECT SUM(units_sold) FROM messy_sales WHERE order_date >= '2024-03-01' AND order_date < '2024-04-01'",
+    "expected_chart": "stat"
+  },
+  {
+    "dataset": "messy_sales",
+    "category": "refusal",
+    "question": "What is the delivery time for each order?",
+    "expected_sql": null,
+    "expected_chart": null
+  },
+  {
+    "dataset": "messy_sales",
+    "category": "refusal",
+    "question": "Which supplier provides the laptops?",
+    "expected_sql": null,
+    "expected_chart": null
+  },
+  {
+    "dataset": "messy_sales",
+    "category": "refusal",
+    "question": "Please remove the duplicate orders.",
+    "expected_sql": null,
+    "expected_chart": null
+  },
+  {
+    "dataset": "messy_employees",
+    "category": "group",
+    "question": "How many employees are in each department?",
+    "expected_sql": "SELECT department, COUNT(*) FROM messy_employees_employees GROUP BY department",
+    "expected_chart": "bar"
+  },
+  {
+    "dataset": "messy_employees",
+    "category": "aggregate",
+    "question": "What is the earliest joining date?",
+    "expected_sql": "SELECT MIN(joining_date) FROM messy_employees_employees",
+    "expected_chart": null
+  },
+  {
+    "dataset": "messy_employees",
+    "category": "filter",
+    "question": "How many employees are inactive?",
+    "expected_sql": "SELECT COUNT(*) FROM messy_employees_employees WHERE active = 0",
+    "expected_chart": "stat"
+  },
+  {
+    "dataset": "messy_employees",
+    "category": "ranking",
+    "question": "Which department has the highest Q1 target?",
+    "expected_sql": "SELECT department FROM messy_employees_targets ORDER BY q1_target DESC LIMIT 1",
+    "expected_chart": null
+  },
+  {
+    "dataset": "messy_employees",
+    "category": "dirty_column",
+    "question": "What is the average salary of employees with a known salary?",
+    "expected_sql": "SELECT AVG(CAST(salary AS REAL)) FROM messy_employees_employees WHERE salary GLOB '[0-9]*'",
+    "expected_chart": "stat"
+  },
+  {
+    "dataset": "messy_employees",
+    "category": "time",
+    "question": "How many employees joined each year?",
+    "expected_sql": "SELECT strftime('%Y', joining_date), COUNT(*) FROM messy_employees_employees GROUP BY 1",
+    "expected_chart": "line"
+  },
+  {
+    "dataset": "customers",
+    "category": "group",
+    "question": "How many customers live in each city?",
+    "expected_sql": "SELECT address_city, COUNT(*) FROM customers GROUP BY address_city",
+    "expected_chart": "bar"
+  },
+  {
+    "dataset": "customers",
+    "category": "filter",
+    "question": "Which customers signed up before June 2023?",
+    "expected_sql": "SELECT name FROM customers WHERE signup < '2023-06-01'",
+    "expected_chart": null
+  },
+  {
+    "dataset": "customers",
+    "category": "text_search",
+    "question": "How many customers have the vip tag?",
+    "expected_sql": "SELECT COUNT(*) FROM customers WHERE tags LIKE '%vip%'",
+    "expected_chart": "stat"
+  },
+  {
+    "dataset": "products",
+    "category": "group",
+    "question": "What is the average list price per category?",
+    "expected_sql": "SELECT category, AVG(list_price) FROM products GROUP BY category",
+    "expected_chart": "bar"
+  },
+  {
+    "dataset": "products",
+    "category": "ranking",
+    "question": "Which is the most expensive product?",
+    "expected_sql": "SELECT product FROM products ORDER BY list_price DESC LIMIT 1",
+    "expected_chart": null
+  },
+  {
+    "dataset": "products",
+    "category": "filter",
+    "question": "How many products cost less than 2000?",
+    "expected_sql": "SELECT COUNT(*) FROM products WHERE list_price < 2000",
+    "expected_chart": "stat"
+  }
+]

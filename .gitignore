@@ -1,0 +1,41 @@
+# ============================================================
+# Text-to-SQL Data Analyst - .gitignore
+# ============================================================
+
+# ---- Secrets (never commit) --------------------------------
+.env
+.env.*
+!.env.example
+
+# ---- Virtual environment -----------------------------------
+.venv/
+venv/
+env/
+
+# ---- Python ------------------------------------------------
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+
+# ---- Dataset workspaces (uploaded data, results, chats) ----
+datasets/
+
+# ---- Notebook outputs and logs -----------------------------
+data/output_data/
+data/logs/
+*.log
+
+# ---- Jupyter -----------------------------------------------
+.ipynb_checkpoints/
+
+# ---- Editors / OS ------------------------------------------
+.vscode/
+.idea/
+*.swp
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ---- Temporary files ---------------------------------------
+*.tmp

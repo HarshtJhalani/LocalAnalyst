@@ -1,0 +1,94 @@
+{
+  "eval_inventory.csv": {
+    "tables": {
+      "eval_inventory": {
+        "header_row": 2,
+        "rows_after": 24,
+        "columns": [
+          "item_code",
+          "item_name",
+          "category",
+          "stock_qty",
+          "unit_cost",
+          "margin_pct",
+          "last_restock",
+          "discontinued",
+          "supplier"
+        ],
+        "types": {
+          "item_code": "text",
+          "item_name": "text",
+          "category": "text",
+          "stock_qty": "integer",
+          "unit_cost": "float",
+          "margin_pct": "float",
+          "last_restock": "date",
+          "discontinued": "boolean",
+          "supplier": "text"
+        },
+        "categories": {
+          "category": [
+            "Beverages",
+            "Dairy",
+            "Snacks"
+          ]
+        },
+        "missing": {
+          "stock_qty": 3
+        },
+        "flags": [
+          [
+            "stock_qty",
+            "outliers"
+          ],
+          [
+            "supplier",
+            "missing_values"
+          ]
+        ],
+        "text_contains": {
+          "item_name": "Caf\u00e9 Latte"
+        }
+      }
+    }
+  },
+  "eval_tickets.xlsx": {
+    "tables": {
+      "eval_tickets": {
+        "header_row": 0,
+        "rows_after": 18,
+        "columns": [
+          "ticket_id",
+          "opened",
+          "priority",
+          "resolved",
+          "hours_spent"
+        ],
+        "types": {
+          "ticket_id": "text",
+          "opened": "date",
+          "priority": "text",
+          "resolved": "boolean",
+          "hours_spent": "float"
+        },
+        "categories": {
+          "priority": [
+            "High",
+            "Low",
+            "Medium"
+          ]
+        },
+        "missing": {
+          "hours_spent": 1
+        },
+        "flags": [
+          [
+            "ticket_id",
+            "identifier_kept_as_text"
+          ]
+        ],
+        "text_contains": {}
+      }
+    }
+  }
+}

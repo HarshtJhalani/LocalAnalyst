@@ -1,0 +1,108 @@
+{
+  "customers": [
+    {
+      "customer_id": 1,
+      "name": "Asha Verma",
+      "signup": "2023-03-14",
+      "address": {
+        "city": "Delhi",
+        "pin": "400001"
+      },
+      "tags": [
+        "online",
+        "new"
+      ]
+    },
+    {
+      "customer_id": 2,
+      "name": "Rahul Singh",
+      "signup": "2023-02-22",
+      "address": {
+        "city": "Delhi",
+        "pin": "400001"
+      },
+      "tags": [
+        "vip",
+        "online"
+      ]
+    },
+    {
+      "customer_id": 3,
+      "name": "Priya Nair",
+      "signup": "2023-11-10",
+      "address": {
+        "city": "Delhi",
+        "pin": "110001"
+      },
+      "tags": [
+        "bulk",
+        "vip"
+      ]
+    },
+    {
+      "customer_id": 4,
+      "name": "Vikram Rao",
+      "signup": "2023-05-05",
+      "address": {
+        "city": "Mumbai",
+        "pin": "110001"
+      },
+      "tags": [
+        "vip",
+        "new"
+      ]
+    },
+    {
+      "customer_id": 5,
+      "name": "Neha Gupta",
+      "signup": "2023-08-06",
+      "address": {
+        "city": "Pune",
+        "pin": "110001"
+      },
+      "tags": [
+        "new",
+        "bulk"
+      ]
+    },
+    {
+      "customer_id": 6,
+      "name": "Arjun Mehta",
+      "signup": "2023-07-17",
+      "address": {
+        "city": "Mumbai",
+        "pin": "400001"
+      },
+      "tags": [
+        "online",
+        "vip"
+      ]
+    },
+    {
+      "customer_id": 7,
+      "name": "Kavya Iyer",
+      "signup": "2023-06-11",
+      "address": {
+        "city": "Delhi",
+        "pin": "411001"
+      },
+      "tags": [
+        "bulk",
+        "vip"
+      ]
+    },
+    {
+      "customer_id": 8,
+      "name": "Rohan Das",
+      "signup": "2023-06-18",
+      "address": {
+        "city": "Mumbai",
+        "pin": "400001"
+      },
+      "tags": [
+        "vip",
+        "new"
+      ]
+    }
+  ]
+}

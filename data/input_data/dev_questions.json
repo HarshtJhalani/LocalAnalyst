@@ -1,0 +1,82 @@
+[
+  {
+    "dataset": "messy_sales",
+    "question": "How many orders are there?",
+    "expected_sql": "SELECT COUNT(*) FROM messy_sales"
+  },
+  {
+    "dataset": "messy_sales",
+    "question": "How many orders were placed in Delhi?",
+    "expected_sql": "SELECT COUNT(*) FROM messy_sales WHERE city = 'Delhi'"
+  },
+  {
+    "dataset": "messy_sales",
+    "question": "What are the total sales by region?",
+    "expected_sql": "SELECT region, SUM(total_sales) FROM messy_sales GROUP BY region"
+  },
+  {
+    "dataset": "messy_sales",
+    "question": "Which product sold the most units?",
+    "expected_sql": "SELECT product FROM messy_sales GROUP BY product ORDER BY SUM(units_sold) DESC LIMIT 1"
+  },
+  {
+    "dataset": "messy_sales",
+    "question": "Show total sales for each month.",
+    "expected_sql": "SELECT strftime('%Y-%m', order_date), SUM(total_sales) FROM messy_sales GROUP BY 1"
+  },
+  {
+    "dataset": "messy_sales",
+    "question": "What is the average discount on paid orders?",
+    "expected_sql": "SELECT AVG(discount_pct) FROM messy_sales WHERE paid = 1"
+  },
+  {
+    "dataset": "messy_sales",
+    "question": "Who are the top 3 customers by total sales?",
+    "expected_sql": "SELECT customer_name FROM messy_sales GROUP BY customer_name ORDER BY SUM(total_sales) DESC LIMIT 3"
+  },
+  {
+    "dataset": "messy_sales",
+    "question": "How many orders have not been paid?",
+    "expected_sql": "SELECT COUNT(*) FROM messy_sales WHERE paid = 0"
+  },
+  {
+    "dataset": "messy_sales",
+    "question": "What is the median total sales for each product?",
+    "expected_sql": "SELECT product, median_of(json_group_array(total_sales)) FROM messy_sales GROUP BY product"
+  },
+  {
+    "dataset": "messy_sales",
+    "question": "Which sales rep handled the most orders?",
+    "expected_sql": "SELECT sales_rep FROM messy_sales GROUP BY sales_rep ORDER BY COUNT(*) DESC LIMIT 1"
+  },
+  {
+    "dataset": "messy_sales",
+    "question": "What were the total sales in February 2024?",
+    "expected_sql": "SELECT SUM(total_sales) FROM messy_sales WHERE order_date >= '2024-02-01' AND order_date < '2024-03-01'"
+  },
+  {
+    "dataset": "messy_sales",
+    "question": "How many orders are missing the number of units sold?",
+    "expected_sql": "SELECT COUNT(*) FROM messy_sales WHERE units_sold IS NULL"
+  },
+  {
+    "dataset": "messy_sales",
+    "question": "What is the profit margin for each product?",
+    "expected_sql": null
+  },
+  {
+    "dataset": "messy_employees",
+    "question": "How many active employees work in Sales?",
+    "expected_sql": "SELECT COUNT(*) FROM messy_employees_employees WHERE active = 1 AND department = 'Sales'"
+  },
+  {
+    "dataset": "messy_employees",
+    "question": "How many employees joined after 2020?",
+    "expected_sql": "SELECT COUNT(*) FROM messy_employees_employees WHERE joining_date >= '2021-01-01'"
+  },
+  {
+    "dataset": "messy_employees",
+    "question": "What is the Q2 target for the Finance department?",
+    "expected_sql": "SELECT q2_target FROM messy_employees_targets WHERE department = 'Finance'"
+  }
+]

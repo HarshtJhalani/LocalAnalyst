@@ -1,0 +1,29 @@
+Inventory export
+Warehouse 3
+Item Code;Item Name;Category;Stock Qty;Unit Cost (Rs);Margin %;Last Restock;Discontinued?;Supplier
+A-001;Masala Chai;Beverages;384;Rs 1,146.00;7.5%;2024/02/05;Y;
+A-002;Masala Chai;Dairy;221;Rs 150.00;5%;2024/02/25;N;
+A-003;Café Latte;Dairy;106;Rs 2,252.50;7.5%;2024/04/24;yes;FreshCo
+A-004;Café Latte;beverages ;362;Rs 1,751.50;10%;2024/02/09;N;
+A-005;Salted Chips;Beverages;N/A;Rs 1,576.00;10%;2024/03/29;yes;
+A-006;Café Latte;Snacks;279;Rs 531.50;5%;2024/05/21;yes;
+A-007;Salted Chips;Dairy;103;Rs 304.00;7.5%;2024/07/16;yes;
+A-008;Masala Chai;beverages ;56;Rs 1,576.50;12.5%;2024/06/11;yes;
+A-008;Masala Chai;beverages ;56;Rs 1,576.50;12.5%;2024/06/11;yes;
+A-009;Crème Biscuit;BEVERAGES;186;Rs 878.75;10%;2024/06/28;Y;
+A-010;Crème Biscuit;Dairy;--;Rs 1,022.00;12.5%;2024/04/07;yes;
+A-011;Paneer Block;BEVERAGES;398;Rs 249.00;5%;2024/03/21;no;
+A-012;Lemon Soda;Beverages;113;Rs 2,343.75;10%;2024/02/24;no;FreshCo
+A-013;Greek Yogurt;Snacks;78;Rs 1,104.00;7.5%;2024/07/09;yes;
+A-014;Greek Yogurt;Dairy;209;Rs 1,502.00;7.5%;2024/05/10;no;
+;;;;;;;;
+A-015;Masala Chai;Beverages;61;Rs 646.75;7.5%;2024/06/23;no;
+A-016;Masala Chai;Snacks;;Rs 2,460.50;15%;2024/03/05;Y;
+A-017;Masala Chai;Dairy;389;Rs 1,112.75;10%;2024/01/29;yes;
+A-018;Greek Yogurt;beverages ;237;Rs 33.75;10%;2024/05/08;N;
+A-019;Masala Chai;BEVERAGES;332;Rs 2,099.75;7.5%;2024/02/09;yes;
+A-020;Crème Biscuit;Dairy;276;Rs 22.75;10%;2024/05/05;Y;
+A-021;Masala Chai;BEVERAGES;99999;Rs 1,000.00;7.5%;2024/05/25;Y;
+A-022;Masala Chai;Snacks;40;Rs 2,201.00;7.5%;2024/06/17;no;
+A-023;Crème Biscuit;BEVERAGES;275;Rs 1,753.00;15%;2024/07/12;N;
+A-024;Lemon Soda;Snacks;348;Rs 1,549.50;15%;2024/04/25;Y;

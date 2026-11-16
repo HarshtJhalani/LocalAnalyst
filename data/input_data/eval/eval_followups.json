@@ -1,0 +1,47 @@
+[
+  {
+    "dataset": "messy_sales",
+    "name": "add a filter",
+    "earlier": [
+      "How many orders were placed in each city?"
+    ],
+    "follow_up": "Only the unpaid ones.",
+    "expected_sql": "SELECT city, COUNT(*) FROM messy_sales WHERE paid = 0 GROUP BY city"
+  },
+  {
+    "dataset": "messy_sales",
+    "name": "refer to a result ('that rep')",
+    "earlier": [
+      "Which sales rep had the highest total sales?"
+    ],
+    "follow_up": "How many orders did that rep handle?",
+    "expected_sql": "SELECT COUNT(*) FROM messy_sales WHERE sales_rep = 'Kiran'"
+  },
+  {
+    "dataset": "messy_sales",
+    "name": "narrow the period",
+    "earlier": [
+      "Show total units sold by product."
+    ],
+    "follow_up": "Now only for March 2024.",
+    "expected_sql": "SELECT product, SUM(units_sold) FROM messy_sales WHERE order_date >= '2024-03-01' AND order_date < '2024-04-01' GROUP BY product"
+  },
+  {
+    "dataset": "messy_employees",
+    "name": "swap the filter value",
+    "earlier": [
+      "How many employees work in Engineering?"
+    ],
+    "follow_up": "And in Finance?",
+    "expected_sql": "SELECT COUNT(*) FROM messy_employees_employees WHERE department = 'Finance'"
+  },
+  {
+    "dataset": "messy_sales",
+    "name": "break down further",
+    "earlier": [
+      "What is the total sales for the North region?"
+    ],
+    "follow_up": "Break that down by city.",
+    "expected_sql": "SELECT city, SUM(total_sales) FROM messy_sales WHERE region = 'North' GROUP BY city"
+  }
+]

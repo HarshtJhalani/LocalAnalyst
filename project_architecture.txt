@@ -1,0 +1,200 @@
+# Project: Text-to-SQL Data Analyst
+
+## 1. Objective
+Ask questions in plain English about an uploaded data file. The agent
+writes SQL, runs it against SQLite, corrects its own failed queries and
+returns a table, a chart and a short summary. Everything runs locally
+with an Ollama model.
+
+## 2. Tech Stack
+- Python 3.11 (containers), notebooks prototyped locally
+- Pandas for loading and cleaning (openpyxl for .xlsx, pyarrow for Parquet)
+- SQLite as the query engine (one database per uploaded dataset)
+- Ollama (direct client) with a GPU or CPU model chosen at startup
+- Plotly for charts
+- FastAPI + Uvicorn backend, Streamlit frontend
+- Docker Compose (api + ui containers; Ollama on the host)
+
+## 3. Code Layout
+Done (converted from the notebooks):
+- config/config.py           paths, dataset workspace paths (get_dataset_paths),
+                             model profiles, limits, cleaning thresholds
+- src/helpers/               one file per stage (section 4) and pipeline.py:
+                             ingest_dataset, answer_question (retry loop),
+                             ask_in_chat, run_question
+- src/evaluation/            run_evaluation.py (python -m src.evaluation.run_evaluation),
+                             result_matching.py
+- tests/                     pytest, no model needed (python -m pytest)
+- notebook/                  numbered prototype notebooks (section 4)
+- data/input_data/           sample files, dev_questions.json, eval/ (held-out)
+To do:
+- src/main/main.py           FastAPI application; includes the routers
+- src/api/                   one file per route (+ common.py shared helpers)
+- src/ui/                    Streamlit app (calls the API only)
+- Dockerfile, docker-compose.yml
+Runtime data:
+- datasets/<DATASET_ID>/     input/, dataset.db, cleaning_report.json,
+                             profile.json, schema.txt, chats.db,
+                             logs/traces.jsonl, status.json
+- Design rule: plain functions and dicts only, no classes.
+
+## 4. Notebooks -> modules
+01_loading_cleaning            file_loader.py, data_cleaner.py
+02_sqlite_profiling            sqlite_store.py, data_profiler.py
+03_model_setup                 model_client.py, model_selector.py
+04_text_to_sql                 sql_generator.py
+05_self_correction_guardrails  input_guardrails.py, sql_guardrails.py,
+                               sql_executor.py, pipeline.answer_question
+06_charts_summary              chart_builder.py, answer_summary.py
+07_memory                      chat_memory.py, pipeline.ask_in_chat
+08_evaluation                  src/evaluation/run_evaluation.py
+Functions were lifted from the executed notebooks (only notebook paths
+became the dataset `paths` dict). A later code review then fixed bugs
+in src/ only (see tests/test_review_fixes.py), so src/ is now the
+reference implementation and the notebooks are the prototypes it
+grew from; they differ in the duplicate-row rule, decimal-comma
+handling, prompt layout and the stricter evaluation matching.
+
+## 5. Cleaning Rules (01_loading_cleaning)
+Applied automatically:
+- detect the header row (title rows above it are dropped)
+- clean column names (snake_case, units removed, duplicates suffixed,
+  SQL keywords suffixed with _value)
+- drop empty rows and columns, trim whitespace
+- null placeholders (N/A, -, null, ?) become real nulls
+- numbers, booleans and dates stored as text are converted when at
+  least 95 % of the non-null values parse, or all but one value when
+  that is still 90 % (one stray "unknown" in a small table)
+- case and spacing variants of a category are merged into the most
+  common normally cased spelling ("Beverages" over "BEVERAGES"; an
+  acronym such as "HR" keeps its capitals)
+- exact duplicate rows are removed when the table has a key column
+  (unique once they are gone) and the repeats are the minority;
+  otherwise they are kept and flagged, since they can be real rows
+- commas are removed from numbers only as thousands separators
+  (1,234,567 or 12,34,567)
+Flagged, never changed:
+- missing values, outliers, ambiguous dates (03/04/2024),
+  similar but different categories, partly numeric columns,
+  numbers with a decimal comma (12,5), identifiers with leading
+  zeros, constant columns, duplicate rows in a table with no key
+The original values are always kept as a separate raw table.
+
+## 6. Storage (02_sqlite_profiling)
+- One SQLite database per uploaded file; one table per sheet, plus
+  <table>_raw with the original text values.
+- Dates are ISO text (YYYY-MM-DD), booleans are 1 / 0.
+- median_of, stdev_of, variance_of and percentile_of are registered on
+  every connection; they take json_group_array(col) because SQLite
+  aggregates would need a class. Called without it, or with a percent
+  outside 0-100 (0.9 for 90), they raise, so the query fails and the
+  retry loop tells the model how to call them.
+- Dataset folder: dataset.db, cleaning_report.json, profile.json,
+  schema.txt (the compact schema the model sees; raw tables excluded).
+
+## 7. Model selection (03_model_setup)
+- Ollama decides GPU or CPU; the app only chooses the model size.
+- auto: load qwen2.5:3b-instruct; no GPU memory used -> cpu profile.
+  Otherwise load qwen2.5:7b-instruct; fully in GPU memory -> gpu
+  profile, else back to the 3B (cpu profile).
+- gpu profile: 7B, num_ctx 8192, 3 retries, 120 s timeout.
+  cpu profile: 3B, num_ctx 4096, 2 retries, 300 s timeout.
+- MODEL_PROFILE=auto|gpu|cpu and OLLAMA_URL come from .env.
+- Every model call uses chat_json(): Ollama's format=<JSON schema>,
+  temperature 0, and a ValueError on invalid or incomplete JSON.
+
+## 8. Text to SQL (04_text_to_sql)
+- Prompt: system rules + 8 few-shot pairs on a made-up `orders` table
+  + the dataset's schema.txt and the question (~2,100 tokens).
+- Output JSON: plan (written first), can_answer, sql.
+- A generated query is scored by its result, not its text: same row
+  count and every expected row present, whatever the column names,
+  column order or row order (rounding tolerated).
+- First-attempt accuracy on 16 questions (no retries):
+  qwen2.5:7b 15/16, qwen2.5:3b 16/16. The prompt was tuned on these
+  same questions, so these numbers are optimistic; 08_evaluation uses
+  a separate held-out question set.
+
+## 9. Guardrails and self-correction (05_self_correction_guardrails)
+- Upload: safe_filename() (no folders, no '..'), max 1,000,000 rows and
+  200 columns per table, plus file type and 50 MB limit (notebook 01).
+- Question: 3-500 characters, control characters removed, prompt-
+  injection phrases and raw SQL statements rejected before the model.
+- SQL check (readable errors for the model): one statement, starts with
+  SELECT/WITH, no write/admin keywords (string literals and comments
+  stripped first), only the dataset's cleaned tables or CTE names.
+- Execution (the real enforcement): read-only connection, SQLite
+  authorizer allowing only SELECT, reads of allowed tables (reads of a
+  CTE report no database and pass), an allow-list of functions and
+  recursive CTEs; 10 s timeout via progress handler; 1,000-row cap.
+- Retry loop: errors and failed checks go back to the model as a new
+  message, up to max_retries; an empty result gets one second look and
+  is then accepted; a repeated failing query stops early; a refusal is
+  final. Every question is traced to traces.jsonl.
+- Results: 12/12 injected mistakes repaired in one retry (both models);
+  no normal question blocked; database file unchanged after 8 hostile
+  questions.
+
+## 10. Charts and summary (06_charts_summary)
+- Chart chosen by rules from the result's shape (not by the model):
+  1 row + 1 number -> stat tile (other columns name it); time + number
+  -> line (one per category up to 8, gaps where a period is missing);
+  time + 2-3 numbers -> small multiples, never a second y-axis;
+  category + number -> horizontal bars, largest first, one colour,
+  top 25; 2 categories -> grouped bars; 2 numbers -> scatter; 1 number
+  -> histogram; otherwise table only.
+- Colours: the validated reference palette (light and dark steps
+  chosen separately); the table view always sits beside the chart.
+- Summary: model writes 1-3 sentences from question + SQL + up to 20
+  rows; every number in it must appear in the result or the question
+  (formatting/rounding tolerated). One retry, then a fixed template.
+  No currency symbols or units added.
+- Caveats: added by code from the cleaning flags of the columns the
+  SQL uses (missing values, extreme values, similar spellings).
+
+## 11. Chat memory (07_memory)
+- chats.db per dataset folder (never the read-only dataset.db): chats
+  (id, title, timestamps) and turns (question, standalone question,
+  status, SQL, row count, first 20 result rows, attempts, time).
+  Deleting a chat removes its turns (foreign key cascade).
+- Follow-ups: the user's original text is checked by the question
+  guardrail first; then, if the chat has answered turns, the model
+  rewrites it into a standalone question using the last 3 answered
+  turns (question, SQL, first 5 rows). The question counts as building
+  on history when the rewrite changed it (the model's own flag was
+  unreliable on the 3B); then the last SQL is added to the SQL prompt.
+- answer_question() gains an optional `context` argument; otherwise the
+  05 loop is unchanged.
+- 7 follow-up conversations: qwen2.5:7b 7/7 with memory vs 1/7
+  without; qwen2.5:3b 4/7 vs 1/7 (its rewrites are right; its SQL for
+  multi-part questions is the weak point).
+
+## 12. Evaluation (08_evaluation, held-out sets in data/input_data/eval/)
+- Held-out data written after tuning and never used to tune: 30
+  questions over 4 datasets, 5 follow-up conversations, 10 hostile
+  prompts, 2 new messy files with an answer key.
+- Final run:
+                              7B (GPU)     3B (GPU)
+  held-out questions          27/30        23/30
+  follow-ups                  5/5          3/5
+  chart type correct          17/17        15/15
+  normal questions blocked    0            0
+  unsafe outcomes             0            0
+  write requests refused      3/4          3/4
+  seconds per answer (avg)    3.7          6.6
+  3B on CPU only: 6/10 correct, 6.4 s per answer.
+  The 3B varied between runs (23-24/30, 3-4/5); the 7B did not.
+- Recommended GPU model: qwen2.5:7b-instruct (unchanged).
+- Weak spots: text columns that are partly numbers (both models 0/2),
+  plain-English write requests answered with a SELECT instead of a
+  refusal, retries rarely rescue held-out failures (0/2).
+- Cleaning: 25/28 checks at first. Misses: ALL-CAPS spelling could win
+  a category merge; a small column with one non-number (17/18 = 94%)
+  stayed text under the 95% rule. Both rules were then changed (see
+  section 5) and cleaning scores 28/28; since the fix came from the
+  held-out files, read that score as somewhat optimistic.
+- Fixed during evaluation: model timeouts crashed the request (now a
+  clean "failed"); model output is capped at 512 tokens.
+- Safety metric note: "unsafe" = data changed, or an answered query
+  writes or reads system/raw tables. Answering a write request with a
+  plain SELECT is counted as a refusal miss, not as unsafe.
