@@ -75,6 +75,24 @@ CREATE TABLE IF NOT EXISTS turns (
 CREATE INDEX IF NOT EXISTS turns_by_chat ON turns(chat_id, position);
 """
 
+# What the answer looked like (added after the first release; older
+# chats.db files get the columns on open, NULL for earlier turns).
+PRESENTATION_COLUMNS = {
+    "summary": "TEXT",
+    "caveats_json": "TEXT",
+    "chart_json": "TEXT",
+    "figures_json": "TEXT",
+    "suggestions_json": "TEXT",
+}
+
+
+def add_missing_columns(connection):
+    existing = {row["name"] for row in connection.execute("PRAGMA table_info(turns)")}
+
+    for name, kind in PRESENTATION_COLUMNS.items():
+        if name not in existing:
+            connection.execute(f"ALTER TABLE turns ADD COLUMN {name} {kind}")
+
 
 def open_chats_db(db_path):
     """
@@ -92,6 +110,7 @@ def open_chats_db(db_path):
     connection.row_factory = sqlite3.Row
     connection.execute("PRAGMA foreign_keys = ON")
     connection.executescript(CHATS_SCHEMA)
+    add_missing_columns(connection)
 
     return connection
 
@@ -100,10 +119,16 @@ def now():
     return datetime.now().isoformat(timespec="seconds")
 
 
+def clean_title(title):
+    """One line, at most CHAT_TITLE_LENGTH characters."""
+
+    return re.sub(r"\s+", " ", title).strip()[:CHAT_TITLE_LENGTH] or "New chat"
+
+
 def create_chat(db_path, title):
     """Start a chat; returns its chat_id."""
 
-    title = re.sub(r"\s+", " ", title).strip()[:CHAT_TITLE_LENGTH] or "New chat"
+    title = clean_title(title)
 
     with closing(open_chats_db(db_path)) as connection, connection:
         cursor = connection.execute(
@@ -142,6 +167,23 @@ def add_turn(db_path, chat_id, turn):
                            (now(), chat_id))
 
     return position
+
+
+def save_presentation(db_path, chat_id, position, presented):
+    """
+    Keep a turn's summary, caveats, chart spec and figures so the chat
+    can be redrawn exactly as it was answered.
+    """
+
+    with closing(open_chats_db(db_path)) as connection, connection:
+        connection.execute(
+            """UPDATE turns SET summary = ?, caveats_json = ?, chart_json = ?,
+                   figures_json = ?, suggestions_json = ?
+               WHERE chat_id = ? AND position = ?""",
+            (presented["summary"]["summary"], json.dumps(presented["caveats"]),
+             json.dumps(presented["chart"], default=str),
+             json.dumps(presented["figures"]),
+             json.dumps(presented.get("suggestions") or []), chat_id, position))
 
 
 def list_chats(db_path):
@@ -184,13 +226,17 @@ def load_turns(db_path, chat_id):
         values = json.loads(turn.pop("preview_json") or "null")
         turn["preview"] = (pd.DataFrame(values, columns=columns)
                            if columns is not None else None)
+        turn["caveats"] = json.loads(turn.pop("caveats_json") or "[]")
+        turn["chart"] = json.loads(turn.pop("chart_json") or "null")
+        turn["figures"] = json.loads(turn.pop("figures_json") or "null")
+        turn["suggestions"] = json.loads(turn.pop("suggestions_json") or "[]")
         turns.append(turn)
 
     return turns
 
 
 def rename_chat(db_path, chat_id, title):
-    title = re.sub(r"\s+", " ", title).strip()[:CHAT_TITLE_LENGTH] or "New chat"
+    title = clean_title(title)
 
     with closing(open_chats_db(db_path)) as connection, connection:
         connection.execute("UPDATE chats SET title = ?, updated_at = ? WHERE chat_id = ?",
@@ -216,6 +262,8 @@ Use the earlier conversation only to fill in what the new question leaves out:
 Add nothing that neither the new question nor the earlier turns contain.
 
 If the new question makes sense on its own, return it unchanged and set uses_history to false.
+It makes sense on its own when it already says what it is about: it names a column, asks about rows, orders or records, or has its own grouping ("by region", "per month").
+Never change its subject (rows must stay rows, not regions) and never drop a "by <X>" or "per <X>".
 Never answer the question and never write SQL."""
 
 
@@ -230,7 +278,10 @@ REWRITE_SCHEMA = {
 
 
 def recent_history(db_path, chat_id, limit=MEMORY_TURNS):
-    """Last answered turns, oldest first."""
+    """
+    Last answered turns, oldest first. Schema turns ("what columns are
+    there?") have no SQL to build on, so they are left out.
+    """
 
     answered = [turn for turn in load_turns(db_path, chat_id)
                 if turn["status"] in {"answered", "empty"} and turn["sql"]]
@@ -256,13 +307,42 @@ def history_text(history):
     return "\n\n".join(blocks)
 
 
-def rewrite_question(settings, history, question):
+SELF_CONTAINED_MIN_WORDS = 6        # "longer than about five words"
+
+
+def is_self_contained(question, column_names):
+    """
+    A question that names one of the dataset's columns and is longer than
+    about five words already says what it is about. Rewriting it risked
+    swapping its subject ("which rows" -> "which regions") or dropping
+    its "by <X>", so it is used as typed.
+    """
+
+    text = question.casefold()
+
+    if len(re.findall(r"\w+", text)) < SELF_CONTAINED_MIN_WORDS:
+        return False
+
+    for name in column_names or []:
+        name = name.casefold()
+
+        if len(name) < 3:
+            continue                     # x, y, z: too likely to match by chance
+
+        for spelling in {name, name.replace("_", " ")}:
+            if re.search(rf"(?<!\w){re.escape(spelling)}(?!\w)", text):
+                return True
+
+    return False
+
+
+def rewrite_question(settings, history, question, column_names=None):
     """
     Returns:
         {"uses_history", "standalone_question", "seconds"}
     """
 
-    if not history:
+    if not history or is_self_contained(question, column_names):
         return {"uses_history": False, "standalone_question": question,
                 "seconds": 0}
 

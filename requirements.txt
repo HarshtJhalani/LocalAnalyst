@@ -7,8 +7,17 @@ ollama==0.6.3
 plotly==7.1.0
 python-dotenv==1.2.4
 
-# Tests:  python -m pytest
+# API:  uvicorn src.main.main:app --reload
+fastapi==0.163.1
+uvicorn[standard]==0.54.0
+python-multipart==0.0.33
+
+# UI:  streamlit run src/ui/streamlit_app.py  (API_URL, default http://127.0.0.1:8000)
+streamlit==1.67.0
+
+# Tests:  python -m pytest  (httpx powers FastAPI's TestClient)
 pytest==9.2.0
+httpx==0.28.1
 
 # Running the notebooks
 ipykernel==7.4.0

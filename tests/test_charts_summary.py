@@ -85,7 +85,8 @@ def test_summary_falls_back_to_template(monkeypatch):
     result = summarize({}, "Sales by city?", "SELECT ...", frame, choose_chart(frame))
 
     assert result["source"] == "template" and result["attempts"] == 2
-    assert result["summary"] == "The result has 2 rows. The highest sales is Pune with 20."
+    assert result["summary"] == ("Pune has the highest sales (20) and Delhi the "
+                                 "lowest (10), across 2 groups.")
 
 
 def test_caveats(sales):
@@ -96,3 +97,22 @@ def test_caveats(sales):
     assert any("Mumbay" in text for text in
                build_caveats("SELECT city FROM messy_sales", profile))
     assert build_caveats("SELECT COUNT(*) FROM messy_sales", profile) == []
+
+
+def test_row_listings_stay_tables():
+    rows = pd.DataFrame({
+        "order_id": ["00101", "00102", "00103"],
+        "order_date": ["2024-01-08", "2024-01-06", "2024-01-09"],
+        "customer_name": ["A", "B", "C"], "region": ["North", "North", "West"],
+        "product": ["Keyboard", "Monitor", "Monitor"], "units_sold": [7, 9, 9],
+        "total_sales": [9450, 31500, 102600]})
+    by_month = pd.DataFrame({"month": ["2024-01", "2024-02", "2024-03"],
+                             "total_sales": [10.0, 12.0, 9.0]})
+
+    assert choose_chart(rows, "give me the first 5 rows")["type"] == "table"
+    assert choose_chart(rows, "show the orders")["type"] == "table"           # 7 columns
+    assert choose_chart(by_month, "list the records per month")["type"] == "table"
+    assert choose_chart(by_month, "sales per month")["type"] == "line"
+    assert choose_chart(rows[["order_date", "units_sold"]],
+                        "plot units for these rows")["type"] == "line"      # chart asked for
+    assert choose_chart(pd.DataFrame({"rows": [32]}), "How many rows are there?")["type"] == "stat"

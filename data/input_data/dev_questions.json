@@ -78,5 +78,20 @@
     "dataset": "messy_employees",
     "question": "What is the Q2 target for the Finance department?",
     "expected_sql": "SELECT q2_target FROM messy_employees_targets WHERE department = 'Finance'"
+  },
+  {
+    "dataset": "messy_sales",
+    "question": "bar plot of units_sold by region",
+    "expected_sql": "SELECT region, SUM(units_sold) AS units_sold FROM messy_sales GROUP BY region"
+  },
+  {
+    "dataset": "messy_sales",
+    "question": "Which rows have no units sold?",
+    "expected_sql": "SELECT order_id, region, units_sold FROM messy_sales WHERE units_sold IS NULL"
+  },
+  {
+    "dataset": "messy_sales",
+    "question": "How many orders are missing units sold, by region",
+    "expected_sql": "SELECT region, COUNT(*) AS missing_units_sold FROM messy_sales WHERE units_sold IS NULL GROUP BY region"
   }
 ]

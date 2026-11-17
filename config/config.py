@@ -168,6 +168,13 @@ MODEL_LOAD_TIMEOUT = 300
 # retried) instead of running into the request timeout.
 MAX_OUTPUT_TOKENS = 512
 
+# Total time for one question (rewrite, SQL attempts, summary). Once it
+# is used up no new model call starts: the SQL loop stops with "failed"
+# and the summary falls back to its template. A call already running
+# can still take up to the profile's request_timeout, so a client should
+# wait ASK_TIME_BUDGET_SECONDS + the longest request_timeout (300 s).
+ASK_TIME_BUDGET_SECONDS = 240
+
 # Prompt size guard. Ollama silently drops the start of a prompt that
 # does not fit num_ctx (the rules and examples), so the prompt is
 # estimated first and the schema text shortened when needed.
@@ -292,6 +299,7 @@ MAX_SERIES = 8
 MAX_SMALL_MULTIPLES = 3
 MIN_SCATTER_ROWS = 5
 MIN_HISTOGRAM_ROWS = 10
+MAX_CHART_COLUMNS = 5             # wider results are row listings: table only
 BAR_SLOT_PX = 36                  # bar ~22 px thick with BAR_GAP 0.4
 BAR_GAP = 0.4
 CHART_WIDTH = 760

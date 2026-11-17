@@ -44,6 +44,10 @@ Rules:
 8. For "top N", "most" or "highest" use ORDER BY ... DESC LIMIT N (LIMIT 1 for a single winner).
 9. Use ROUND(value, 2) for averages and ratios.
 10. If the question needs a value that no column holds (for example cost, profit, margin, rating, age), set can_answer to false, say which column is missing in plan, and leave sql empty. Never invent a formula from other columns to stand in for it.
+11. "<number column> by <category>" or "plot/show <number> by <category>" means SUM(<number>) grouped by the category, unless the question says count, number of, how many or average.
+12. "missing", "no value", "blank", "empty", "not recorded" or "no <column>" mean <column> IS NULL, never = 0 and never COUNT(<column>) = 0 (COUNT skips NULLs). Count missing values with COUNT(*) ... WHERE <column> IS NULL.
+13. "Which rows/orders/records ..." asks for the rows themselves: SELECT the key column(s) plus the asked column, with no GROUP BY.
+14. Keep every grouping the question asks for: "by <X>" or "per <X>" needs GROUP BY <X>.
 
 Fill "plan" first: one or two sentences naming the table, columns, filters and grouping you will use."""
 
@@ -109,6 +113,22 @@ FEW_SHOT_EXAMPLES = [
      {"plan": "The orders table has no customer column, so this cannot be answered.",
       "can_answer": False,
       "sql": ""}),
+
+    ("Plot quantity by store.",
+     {"plan": "Quantity by store means the total quantity per store: SUM(quantity) grouped by store.",
+      "can_answer": True,
+      "sql": "SELECT store, SUM(quantity) AS total_quantity FROM orders GROUP BY store"}),
+
+    ("Which orders have no quantity recorded?",
+     {"plan": "Return the orders themselves where quantity IS NULL, with their key and the asked column.",
+      "can_answer": True,
+      "sql": "SELECT order_id, store, quantity FROM orders WHERE quantity IS NULL"}),
+
+    ("How many orders are missing a quantity, by store?",
+     {"plan": "Count rows where quantity IS NULL, grouped by store as asked.",
+      "can_answer": True,
+      "sql": "SELECT store, COUNT(*) AS missing_quantity FROM orders "
+             "WHERE quantity IS NULL GROUP BY store"}),
 
     ("What is the profit for each category?",
      {"plan": "Profit needs a cost column and orders has none; amount alone is revenue, so this cannot be answered.",

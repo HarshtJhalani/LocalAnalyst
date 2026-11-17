@@ -1,0 +1,7 @@
+# Streamlit settings for src/ui/streamlit_app.py (run from the project root).
+[server]
+# Same limit as the API (MAX_FILE_SIZE_MB in config/config.py).
+maxUploadSize = 50
+
+[browser]
+gatherUsageStats = false

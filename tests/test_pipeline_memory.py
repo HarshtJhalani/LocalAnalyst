@@ -151,7 +151,7 @@ def test_follow_up_uses_the_rewrite_and_last_sql(monkeypatch, sales):
         {"sql": "SELECT city, SUM(total_sales) AS t FROM messy_sales WHERE paid = 1 "
                 "GROUP BY city"},
     ])
-    monkeypatch.setattr(pipeline, "rewrite_question", lambda settings, history, question: {
+    monkeypatch.setattr(pipeline, "rewrite_question", lambda settings, history, question, columns=None: {
         "uses_history": bool(history),
         "standalone_question": "Total sales by city for paid orders?" if history else question,
         "seconds": 0})

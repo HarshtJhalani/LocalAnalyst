@@ -6,39 +6,110 @@ writes SQL, runs it against SQLite, corrects its own failed queries and
 returns a table, a chart and a short summary. Everything runs locally
 with an Ollama model.
 
+### Problem
+Business users keep their data in spreadsheets and exports that are
+messy (title rows, numbers stored as text, "N/A", mixed spellings), and
+answering a simple question needs SQL or manual spreadsheet work. Cloud
+AI tools could help, but company data often must not leave the
+machine. More detail: README.md, "Problem Statement".
+
+### Goals
+- answer plain-English questions about an uploaded file correctly
+- clean messy files automatically and report what changed
+- stay local and read-only
+- explain every answer (SQL, chart, number-checked summary, caveats)
+
+### Non-goals
+- changing data: the system only reads; write requests are refused
+- more than one user, logins or access control
+- cloud or hosted models
+- joining tables across different uploaded datasets
+- database connections as a data source (files only)
+
 ## 2. Tech Stack
-- Python 3.11 (containers), notebooks prototyped locally
-- Pandas for loading and cleaning (openpyxl for .xlsx, pyarrow for Parquet)
+- Python, Pandas for loading and cleaning (openpyxl for .xlsx, pyarrow
+  for Parquet); notebooks for prototyping
 - SQLite as the query engine (one database per uploaded dataset)
 - Ollama (direct client) with a GPU or CPU model chosen at startup
 - Plotly for charts
 - FastAPI + Uvicorn backend, Streamlit frontend
-- Docker Compose (api + ui containers; Ollama on the host)
+- Runs today as two local processes started by run_api.bat and
+  run_ui.bat (or run_all.bat); setup.bat creates the venv
+- Planned, not built: Docker Compose (api + ui containers, Ollama on
+  the host at http://host.docker.internal:11434). The API binds
+  0.0.0.0 inside its container, the UI reaches it as
+  API_URL=http://api:8000, and the host mappings must be
+  127.0.0.1:8000:8000 and 127.0.0.1:8501:8501 so nothing is opened
+  beyond the machine.
 
 ## 3. Code Layout
-Done (converted from the notebooks):
-- config/config.py           paths, dataset workspace paths (get_dataset_paths),
-                             model profiles, limits, cleaning thresholds
-- src/helpers/               one file per stage (section 4) and pipeline.py:
-                             ingest_dataset, answer_question (retry loop),
-                             ask_in_chat, run_question
-- src/evaluation/            run_evaluation.py (python -m src.evaluation.run_evaluation),
-                             result_matching.py
-- tests/                     pytest, no model needed (python -m pytest)
-- notebook/                  numbered prototype notebooks (section 4)
-- data/input_data/           sample files, dev_questions.json, eval/ (held-out)
-To do:
-- src/main/main.py           FastAPI application; includes the routers
-- src/api/                   one file per route (+ common.py shared helpers)
-- src/ui/                    Streamlit app (calls the API only)
-- Dockerfile, docker-compose.yml
-Runtime data:
-- datasets/<DATASET_ID>/     input/, dataset.db, cleaning_report.json,
-                             profile.json, schema.txt, chats.db,
-                             logs/traces.jsonl, status.json
-- Design rule: plain functions and dicts only, no classes.
 
-## 4. Notebooks -> modules
+### Design rules
+- Plain functions and dicts only, no classes (the author's choice, for
+  simplicity; see section 16). Known costs: the statistics functions
+  take json_group_array(col) instead of being SQLite aggregates
+  (section 7), and the API has no Pydantic models, so Swagger shows no
+  response schemas (section 14).
+- Helpers never import src/api; API routes call helpers (mostly
+  pipeline.py) and turn results into HTTP responses.
+- src/ is the reference implementation. The notebooks are frozen
+  prototypes and are not kept in sync with it.
+
+### Files
+```
+config/config.py          paths, dataset workspace paths (get_dataset_paths),
+                          model profiles, limits, cleaning thresholds
+src/helpers/              one file per stage (section 4) and pipeline.py:
+                          ingest_dataset, answer_question (retry loop),
+                          ask_in_chat, present_answer, run_question
+src/api/                  one file per route (+ common.py shared helpers)
+src/main/main.py          FastAPI application; startup picks the model,
+                          includes the routers (uvicorn src.main.main:app)
+src/ui/streamlit_app.py   Streamlit app, calls the API only (API_URL);
+                          .streamlit/config.toml caps uploads at 50 MB
+src/evaluation/           run_evaluation.py (python -m src.evaluation.run_evaluation),
+                          result_matching.py
+tests/                    pytest, no model needed (python -m pytest)
+notebook/                 numbered prototype notebooks (section 4)
+data/input_data/          sample files, dev_questions.json, eval/ (held-out)
+postman/                  Postman collection: every route in demo order
+*.bat                     setup and run scripts (Windows)
+```
+
+### Runtime data
+```
+datasets/<DATASET_ID>/    input/, dataset.db, cleaning_report.json,
+                          profile.json, schema.txt, chats.db,
+                          logs/traces.jsonl, status.json
+```
+
+## 4. Architecture (data flow)
+
+Upload:
+```
+POST /datasets -> ingest_dataset -> read file -> clean -> SQLite
+               (cleaned + <table>_raw) -> profile.json + schema.txt
+               -> status.json: running -> completed | failed
+```
+
+Question:
+```
+POST /datasets/{id}/ask -> run_question -> ask_in_chat
+  1. question guardrail (blocked -> 400)
+  2. classify_message: write request    -> "refused", no SQL
+                       vague / feedback -> "clarify" reply, no SQL
+                       chart_change    -> re-run last stored SQL, redraw
+                       data            -> continue
+  3. follow-up rewrite into a standalone question (chat history)
+  4. answer_question: structure question -> "schema" answer from profile
+                      else SQL generation -> SQL check -> read-only
+                      execution -> retry with the error (section 10)
+  5. present_answer: chart (rules), summary (number-checked), caveats
+  6. store the turn and its presentation in chats.db
+```
+
+## 5. Notebooks -> modules
+```
 01_loading_cleaning            file_loader.py, data_cleaner.py
 02_sqlite_profiling            sqlite_store.py, data_profiler.py
 03_model_setup                 model_client.py, model_selector.py
@@ -48,14 +119,10 @@ Runtime data:
 06_charts_summary              chart_builder.py, answer_summary.py
 07_memory                      chat_memory.py, pipeline.ask_in_chat
 08_evaluation                  src/evaluation/run_evaluation.py
-Functions were lifted from the executed notebooks (only notebook paths
-became the dataset `paths` dict). A later code review then fixed bugs
-in src/ only (see tests/test_review_fixes.py), so src/ is now the
-reference implementation and the notebooks are the prototypes it
-grew from; they differ in the duplicate-row rule, decimal-comma
-handling, prompt layout and the stricter evaluation matching.
+added after the notebooks      schema_answer.py, message_intent.py
+```
 
-## 5. Cleaning Rules (01_loading_cleaning)
+## 6. Cleaning Rules (01_loading_cleaning)
 Applied automatically:
 - detect the header row (title rows above it are dropped)
 - clean column names (snake_case, units removed, duplicates suffixed,
@@ -73,86 +140,150 @@ Applied automatically:
   otherwise they are kept and flagged, since they can be real rows
 - commas are removed from numbers only as thousands separators
   (1,234,567 or 12,34,567)
+
 Flagged, never changed:
 - missing values, outliers, ambiguous dates (03/04/2024),
   similar but different categories, partly numeric columns,
   numbers with a decimal comma (12,5), identifiers with leading
   zeros, constant columns, duplicate rows in a table with no key
+
 The original values are always kept as a separate raw table.
 
-## 6. Storage (02_sqlite_profiling)
+## 7. Storage (02_sqlite_profiling)
 - One SQLite database per uploaded file; one table per sheet, plus
   <table>_raw with the original text values.
 - Dates are ISO text (YYYY-MM-DD), booleans are 1 / 0.
 - median_of, stdev_of, variance_of and percentile_of are registered on
-  every connection; they take json_group_array(col) because SQLite
-  aggregates would need a class. Called without it, or with a percent
+  every connection. Python's sqlite3 needs a class for a real aggregate
+  function, which the design rules exclude, so they take
+  json_group_array(col) instead. Called without it, or with a percent
   outside 0-100 (0.9 for 90), they raise, so the query fails and the
   retry loop tells the model how to call them.
 - Dataset folder: dataset.db, cleaning_report.json, profile.json,
   schema.txt (the compact schema the model sees; raw tables excluded).
 
-## 7. Model selection (03_model_setup)
+## 8. Model selection (03_model_setup)
 - Ollama decides GPU or CPU; the app only chooses the model size.
-- auto: load qwen2.5:3b-instruct; no GPU memory used -> cpu profile.
-  Otherwise load qwen2.5:7b-instruct; fully in GPU memory -> gpu
-  profile, else back to the 3B (cpu profile).
+- MODEL_PROFILE=auto works in three steps:
+  1. Load qwen2.5:3b-instruct. If Ollama reports no GPU memory used
+     for it, choose the cpu profile.
+  2. Otherwise load qwen2.5:7b-instruct. If it is fully in GPU memory
+     (Ollama's loaded-model size_vram / size is at least GPU_FIT_SHARE,
+     0.99), choose the gpu profile.
+  3. Otherwise fall back to the 3B (cpu profile).
 - gpu profile: 7B, num_ctx 8192, 3 retries, 120 s timeout.
   cpu profile: 3B, num_ctx 4096, 2 retries, 300 s timeout.
 - MODEL_PROFILE=auto|gpu|cpu and OLLAMA_URL come from .env.
 - Every model call uses chat_json(): Ollama's format=<JSON schema>,
   temperature 0, and a ValueError on invalid or incomplete JSON.
+  Output is capped at 512 tokens (MAX_OUTPUT_TOKENS); an over-long
+  answer becomes invalid JSON and is retried.
 
-## 8. Text to SQL (04_text_to_sql)
+## 9. Text to SQL (04_text_to_sql)
 - Prompt: system rules + 8 few-shot pairs on a made-up `orders` table
   + the dataset's schema.txt and the question (~2,100 tokens).
-- Output JSON: plan (written first), can_answer, sql.
+- Prompt size guard: the prompt is estimated at ~3 characters per token
+  (PROMPT_CHARS_PER_TOKEN) before sending. If it does not fit num_ctx
+  minus 512 output tokens and a 400-token retry reserve
+  (RETRY_TOKEN_RESERVE), schema.txt is shortened (compact, then names
+  and types only); if even that does not fit, the question fails with a
+  "too many columns" message. This guards against Ollama silently
+  dropping the start of an over-long prompt.
+- Output JSON: plan (written first), can_answer, sql. can_answer=false
+  is a refusal (status "refused").
 - A generated query is scored by its result, not its text: same row
   count and every expected row present, whatever the column names,
   column order or row order (rounding tolerated).
-- First-attempt accuracy on 16 questions (no retries):
-  qwen2.5:7b 15/16, qwen2.5:3b 16/16. The prompt was tuned on these
-  same questions, so these numbers are optimistic; 08_evaluation uses
-  a separate held-out question set.
+- Dev-set accuracy (16 questions, first attempt): see section 13.
 
-## 9. Guardrails and self-correction (05_self_correction_guardrails)
+## 10. Guardrails and self-correction (05_self_correction_guardrails)
 - Upload: safe_filename() (no folders, no '..'), max 1,000,000 rows and
-  200 columns per table, plus file type and 50 MB limit (notebook 01).
+  200 columns per table, plus file type and 50 MB limit.
 - Question: 3-500 characters, control characters removed, prompt-
   injection phrases and raw SQL statements rejected before the model.
-- SQL check (readable errors for the model): one statement, starts with
-  SELECT/WITH, no write/admin keywords (string literals and comments
-  stripped first), only the dataset's cleaned tables or CTE names.
-- Execution (the real enforcement): read-only connection, SQLite
-  authorizer allowing only SELECT, reads of allowed tables (reads of a
-  CTE report no database and pass), an allow-list of functions and
-  recursive CTEs; 10 s timeout via progress handler; 1,000-row cap.
+- SQL check (gives the model readable errors): one statement, starts
+  with SELECT/WITH, no write/admin keywords (string literals and
+  comments stripped first), only the dataset's cleaned tables or CTE
+  names.
+- Execution (the enforcing layer; the SQL check above only explains):
+  read-only connection, SQLite authorizer allowing only SELECT, reads
+  of allowed tables (reads of a CTE report no database and pass), an
+  allow-list of functions and recursive CTEs; 10 s timeout via progress
+  handler; 1,000-row cap.
 - Retry loop: errors and failed checks go back to the model as a new
   message, up to max_retries; an empty result gets one second look and
-  is then accepted; a repeated failing query stops early; a refusal is
-  final. Every question is traced to traces.jsonl.
-- Results: 12/12 injected mistakes repaired in one retry (both models);
-  no normal question blocked; database file unchanged after 8 hostile
-  questions.
+  is then accepted; the loop stops when the model repeats any query it
+  already tried (normalised: spacing, case, trailing ';'); a refusal is
+  final; a model timeout or connection error is final for the question
+  (503), not retried. Every question is traced to traces.jsonl.
 
-## 10. Charts and summary (06_charts_summary)
-- Chart chosen by rules from the result's shape (not by the model):
-  1 row + 1 number -> stat tile (other columns name it); time + number
-  -> line (one per category up to 8, gaps where a period is missing);
-  time + 2-3 numbers -> small multiples, never a second y-axis;
-  category + number -> horizontal bars, largest first, one colour,
-  top 25; 2 categories -> grouped bars; 2 numbers -> scatter; 1 number
-  -> histogram; otherwise table only.
-- Colours: the validated reference palette (light and dark steps
-  chosen separately); the table view always sits beside the chart.
+### Structure questions (schema_answer.py)
+- Why: pragma_* and sqlite_master are blocked, so SQL cannot answer
+  "what columns are there?".
+- Match: after the question guardrail and the follow-up rewrite,
+  is_schema_question() matches structure wording ("what columns",
+  "describe the data", "schema" ...) but not value questions ("which
+  column has the highest sales").
+- Output: status "schema"; one row per column of the cleaned tables
+  (never *_raw) from profile.json, a summary sentence and 3-5 suggested
+  questions from column types. No SQL and no SQL model call.
+- Fallback: generated SQL naming pragma_* / sqlite_master /
+  sqlite_schema returns the schema answer instead of a retry.
+
+## 11. Charts and summary (06_charts_summary)
+- A chart type named in the question (pie, donut, column, bar, line,
+  area, stacked, scatter, histogram; checked in the user's own words
+  and in the rewritten question) is drawn when the result fits it;
+  otherwise the shaped chart is drawn with a note saying why. Lists of
+  rows (rows / records asked for, or more than MAX_CHART_COLUMNS
+  columns) stay a table.
+- Otherwise the chart is chosen by rules from the result's shape, never
+  by the model: one number -> stat tile; time + number -> line (one per
+  category); time + 2-3 numbers -> small multiples, never a second
+  y-axis; category + number -> horizontal bars, largest first; two
+  categories -> grouped bars; two numbers -> scatter; one number column
+  -> histogram; otherwise table only. Limits (bars, series, pie slices)
+  are in config/config.py's chart settings block (MAX_CHART_COLUMNS,
+  MAX_BARS, ...) and chart_builder.py.
+- Colours: the categorical palette in chart_builder.THEMES, with light
+  and dark steps chosen separately; the table view always sits beside
+  the chart.
 - Summary: model writes 1-3 sentences from question + SQL + up to 20
   rows; every number in it must appear in the result or the question
   (formatting/rounding tolerated). One retry, then a fixed template.
   No currency symbols or units added.
 - Caveats: added by code from the cleaning flags of the columns the
-  SQL uses (missing values, extreme values, similar spellings).
+  SQL uses (missing values, extreme values, similar spellings), plus a
+  note when the result was cut at the 1,000-row cap.
 
-## 11. Chat memory (07_memory)
+## 12. Chat memory (07_memory)
+How a chat message is sorted, then how chats and follow-ups are stored.
+
+### Message intent (message_intent.py)
+- Before the rewrite, classify_message() sorts each message by rules,
+  with no model call. The write check runs first, so a write request
+  is refused even when it names a column. Order of checks:
+  1. a write verb opening the message ("delete the North rows",
+     "please update units_sold to 5") -> refused with a fixed reply;
+     not when followed by in / over / by / per / up ... ("change in
+     sales", "add up the totals") or when it is about the chart ("fix
+     the chart"). answer_question() makes the same check, so direct
+     callers such as the evaluation are covered too.
+  2. names a column (or a part of one longer than 2 letters) -> data;
+     words the sorting relies on ("last", "change", "chart", filler
+     words) never count as a column name on their own
+  3. a chart type plus a reference back ("make it a pie chart",
+     "change it to bars") ->
+     chart_change: the last answered turn's stored SQL is re-run
+     through check_sql + execute_sql (read-only, no model call) and
+     drawn as asked; with no earlier answer -> clarify
+  4. "that's wrong" without a change -> feedback -> clarify
+  5. only filler words ("what", "ok", "?") -> vague -> clarify
+  6. everything else -> data
+- A clarify reply has no SQL. In an existing chat it is stored as a
+  turn; as the first message of a new chat it starts no chat.
+
+### Storage and follow-ups
 - chats.db per dataset folder (never the read-only dataset.db): chats
   (id, title, timestamps) and turns (question, standalone question,
   status, SQL, row count, first 20 result rows, attempts, time).
@@ -161,40 +292,200 @@ The original values are always kept as a separate raw table.
   guardrail first; then, if the chat has answered turns, the model
   rewrites it into a standalone question using the last 3 answered
   turns (question, SQL, first 5 rows). The question counts as building
-  on history when the rewrite changed it (the model's own flag was
-  unreliable on the 3B); then the last SQL is added to the SQL prompt.
-- answer_question() gains an optional `context` argument; otherwise the
-  05 loop is unchanged.
-- 7 follow-up conversations: qwen2.5:7b 7/7 with memory vs 1/7
-  without; qwen2.5:3b 4/7 vs 1/7 (its rewrites are right; its SQL for
-  multi-part questions is the weak point).
+  on history when the rewrite changed it; the rewrite model's own
+  "uses history" flag is not used. Then the last SQL is passed to
+  answer_question as context.
+- Each turn also stores its summary, caveats, chart spec, Plotly
+  figures and suggestions. A reopened chat draws the chart from the
+  stored figure and the table from the stored 20-row preview; a turn
+  without a stored figure shows the table only. Schema turns have no
+  SQL, so they are left out of the follow-up history.
 
-## 12. Evaluation (08_evaluation, held-out sets in data/input_data/eval/)
+## 13. Evaluation (08_evaluation)
+- Data sets: data/input_data/dev_questions.json (dev) and
+  data/input_data/eval/ (held-out).
+- Dev set (16 questions, first attempt, no retries; the prompt was
+  tuned on them, so these are optimistic): qwen2.5:7b 15/16,
+  qwen2.5:3b 16/16.
 - Held-out data written after tuning and never used to tune: 30
   questions over 4 datasets, 5 follow-up conversations, 10 hostile
   prompts, 2 new messy files with an answer key.
-- Final run:
+- Measured before the latest changes (rule-based write refusal, time
+  budget; sections 12 and 17), so the write-request row is not
+  re-measured. Final run (single run; both models on the GPU so they
+  can be compared at the same settings):
+```
                               7B (GPU)     3B (GPU)
-  held-out questions          27/30        23/30
-  follow-ups                  5/5          3/5
-  chart type correct          17/17        15/15
+  held-out questions          27/30        24/30
+  follow-ups                  4/5          5/5
+  chart type correct          17/17        17/17
   normal questions blocked    0            0
   unsafe outcomes             0            0
-  write requests refused      3/4          3/4
-  seconds per answer (avg)    3.7          6.6
-  3B on CPU only: 6/10 correct, 6.4 s per answer.
-  The 3B varied between runs (23-24/30, 3-4/5); the 7B did not.
-- Recommended GPU model: qwen2.5:7b-instruct (unchanged).
-- Weak spots: text columns that are partly numbers (both models 0/2),
-  plain-English write requests answered with a SELECT instead of a
-  refusal, retries rarely rescue held-out failures (0/2).
-- Cleaning: 25/28 checks at first. Misses: ALL-CAPS spelling could win
-  a category merge; a small column with one non-number (17/18 = 94%)
-  stayed text under the 95% rule. Both rules were then changed (see
-  section 5) and cleaning scores 28/28; since the fix came from the
-  held-out files, read that score as somewhat optimistic.
-- Fixed during evaluation: model timeouts crashed the request (now a
-  clean "failed"); model output is capped at 512 tokens.
-- Safety metric note: "unsafe" = data changed, or an answered query
-  writes or reads system/raw tables. Answering a write request with a
-  plain SELECT is counted as a refusal miss, not as unsafe.
+  write requests refused      3/4          3/4     (before the rule)
+  seconds per answer (avg)    3.9          3.3
+```
+- 3B on the CPU only (10-question subset): 6/10 correct, 6.4 s per
+  answer.
+- The 3B varies between runs (23-24/30 held-out, 3-5/5 follow-ups);
+  the 7B does not.
+- Recommended GPU model: qwen2.5:7b-instruct. The held-out score
+  (27 vs 24) decides it, not the tuned dev set.
+- Guardrail checks: 12/12 injected SQL mistakes repaired in one retry
+  (both models); 0 of the 30 held-out questions blocked; database file
+  unchanged after 8 hostile questions.
+- Cleaning: 28/28 checks on the held-out messy files. Two cleaning
+  rules (section 6) were changed after a first run on these files
+  scored 25/28, so 28/28 is not a held-out result.
+- "Unsafe" means data changed, or an answered query writes or reads
+  system/raw tables. Answering a write request with a plain SELECT is
+  counted as a refusal miss, not as unsafe.
+
+## 14. API (src/api/, src/main/main.py)
+- Startup: logging, datasets/ folder, Ollama check, model selection
+  (MODEL_PROFILE). Fails fast if Ollama is down or a model is missing.
+- Swagger UI: http://127.0.0.1:8000/docs. Postman: postman/.
+- Plain FastAPI parameters (File, Body, Query) and dict responses, no
+  Pydantic models (design rules, section 3).
+- Setup and run steps: README.md.
+
+### Endpoints
+```
+GET    /                                        health, model in use
+POST   /datasets                                upload -> clean -> SQLite -> profile (201)
+GET    /datasets                                list, newest first
+GET    /datasets/{id}?include_profile=false     status, cleaning report, schema
+                                                (profile unless include_profile=false)
+DELETE /datasets/{id}                           permanent
+POST   /datasets/{id}/ask                       {question, chat_id?, include_figures?}
+                                                -> SQL, rows, chart, summary, caveats,
+                                                   attempts, suggestions
+GET    /datasets/{id}/chats                     chats, most recent first
+GET    /datasets/{id}/chats/{chat_id}?include_figures=false
+                                                turns with 20-row previews, stored
+                                                summary, caveats, chart, suggestions
+DELETE /datasets/{id}/chats/{chat_id}           permanent
+DELETE /datasets/{id}/chats?chat_ids=1&chat_ids=2
+                                                the listed chats; nothing is deleted
+                                                if an id is unknown
+DELETE /datasets/{id}/chats?all=true            every chat of the dataset
+GET    /datasets/{id}/chats/{chat_id}/turns/{position}/download?format=csv|xlsx
+                                                position is 1-based within the chat
+```
+
+### Downloads
+- Downloads re-run the turn's stored SQL now (recomputed, not a
+  snapshot), read-only, with the 10 s timeout and at most 100,000
+  rows (header X-Result-Truncated when cut). A schema turn returns its
+  column table; refused / failed / blocked / clarify turns return 409.
+  dataset.db never changes after upload, so the re-run returns the same
+  rows unless the query uses the current date or time ('now'); without
+  ORDER BY the row order may differ, and the download can hold more
+  rows than the 1,000-row answer.
+- Errors: 404 unknown chat or turn; 409 no result, or the stored SQL
+  no longer passes the check; 500 the re-run failed (for example the
+  10 s timeout).
+
+### Statuses
+```
+answered   query ran and returned rows                       200
+empty      query ran, no rows (after one second look)        200
+schema     structure question, answered from the profile     200
+clarify    not a data question; reply in "message", no SQL   200
+refused    the model said the data cannot answer it          200
+failed     no working query, or the time budget ran out      200
+failed     model unreachable or a model call timed out       503
+blocked    question guardrail rejected it                    400
+```
+Other /ask errors: 404 unknown dataset or chat, 409 dataset not ready,
+422 missing question. A dataset's status.json is running, completed
+or failed; only completed datasets can be queried (else 409).
+
+## 15. UI (src/ui/streamlit_app.py)
+- Talks to the FastAPI backend only (API_URL), so it can run in a
+  separate container once Docker is built.
+- Sidebar: API status and model, upload, dataset picker, chat history
+  (new / open / delete one, several or all), delete dataset.
+- Ask tab: chat with summary, caveats, chart (light or dark palette
+  following the viewer's theme), table, CSV / Excel downloads and "How
+  this was answered" (interpreted question, plan, SQL, self-correction
+  attempts). Reopened chats redraw as described in section 12.
+- Data tab: what the cleaning changed and flagged, per-column profile,
+  the schema text the model sees.
+
+## 16. Alternatives considered
+- SQLite over DuckDB or Postgres: no server, one file per dataset,
+  built into Python; DuckDB's native median/percentile was not worth a
+  second engine (statistics are covered by registered functions).
+- Local Ollama over a hosted model: data never leaves the machine;
+  costs accuracy and speed compared with large hosted models.
+- Rule-based charts over the model choosing the chart: deterministic,
+  testable, no extra model call; the user can still name a chart type.
+- Direct Ollama client over LangChain: fewer dependencies and full
+  control of the JSON schema, retries and prompts.
+- Plain functions and dicts over classes / Pydantic: the author's
+  choice, for simplicity: every stage reads as straight-line functions
+  with no object layer to learn. Costs accepted: statistics need the
+  json_group_array call form (section 7), and Swagger shows no response
+  schemas (section 14).
+- Separate API and UI over one Streamlit process: the API can be
+  demonstrated on its own (Swagger, Postman) and the UI can move to its
+  own container.
+- Structure answers from profile.json over letting the model write
+  them: no SQL can reach pragma_* / sqlite_master, and the answer is
+  exact.
+
+## 17. Constraints, risks and mitigations
+Each item ends with how it is handled: Mitigation (in place), Accepted
+(fits a local, single-user tool) or Planned.
+
+- Single user on one machine; no authentication, and deletes are
+  permanent. Mitigation: the API binds to 127.0.0.1; a container setup
+  must not publish the port beyond localhost. Accepted: no logins.
+- Routes run in FastAPI's thread pool, and Ollama serves one model
+  call at a time, so concurrent questions queue on the model. Uploads
+  are processed inside the POST /datasets request, and overlapping
+  writes to one chats.db are not guarded: a clash makes the later
+  request fail with "database is locked"; no data is corrupted. A
+  queued question spends its 240 s budget waiting and can end as
+  "failed" or hit the UI's 600 s timeout. Accepted: single user.
+- If the API stops during an upload, its status.json stays "running":
+  the dataset cannot be queried (409) and must be deleted and uploaded
+  again. Accepted: uploads take seconds and there is one user.
+- Long questions. Mitigation: each question has a total time budget
+  (ASK_TIME_BUDGET_SECONDS, 240 s). The deadline is checked before each
+  SQL attempt and before the summary (the follow-up rewrite runs first,
+  before it can matter): once it has passed, the SQL loop ends with
+  "failed" ("took too long") and the summary uses its template. A call
+  already running can still take up to the profile timeout, so the worst
+  case is about 240 s plus one profile timeout, and the UI waits 600 s
+  (240 s budget + one 300 s CPU call + 60 s for chart and storage). A
+  chart change makes no model call and is bounded by the 10 s
+  execution timeout.
+- Prompt injection through cell values (schema samples, summary rows,
+  history previews). Mitigation: the read-only connection and the
+  authorizer protect the data. Accepted: the wording of a summary or
+  rewrite could still be steered.
+- Write requests. Mitigation: plain-English write requests are refused
+  by rule (section 12). A request worded in a way the rule does not
+  match still relies on the model's can_answer flag. Planned: re-measure
+  with the hostile set (3/4 refused before the rule).
+- Text columns that are partly numbers are answered badly (0/2).
+  Mitigation: the cleaning step flags them, and caveats name them in
+  answers. Accepted: no automatic conversion of mixed columns.
+- Model variance: the 3B varies between runs, and the 7B lost one
+  held-out follow-up after the missing-value rules were added (it adds
+  OR sales_rep_2 to "orders did Kiran handle"). Accepted: reported in
+  section 13. Planned: re-run the evaluation after the latest changes.
+- Message intent uses word lists, so unusual wording can be misrouted
+  (for example "change the chart colours" goes through as a data
+  question and is answered again). Mitigation: column names made of
+  intent words no longer hijack messages, and tests cover the known
+  cases. Accepted: a misrouted message gets an answer, never a change.
+- Wide tables: the practical column limit is set by num_ctx (lower on
+  the CPU profile), not by the 200-column upload cap, and a shortened
+  schema may lower accuracy. Mitigation: step-by-step shortening and a
+  clear "too many columns" error (section 9). Accepted: no per-table
+  schema selection.
+- Size limits: 50 MB uploads, 1,000,000 rows and 200 columns per table,
+  1,000 rows per answer, 100,000 rows per download. Mitigation: each is
+  enforced in code with a clear error or a truncation note.

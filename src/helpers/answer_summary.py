@@ -17,11 +17,14 @@
 
 import json
 import math
+import numbers
 import re
+
+import numpy
 
 from config import MAX_RESULT_ROWS, SUMMARY_MAX_ROWS
 from src.helpers.chart_builder import format_number, readable
-from src.helpers.model_client import MODEL_ERRORS, chat_json
+from src.helpers.model_client import MODEL_ERRORS, chat_json, past_deadline
 
 
 # ============================================================
@@ -143,11 +146,17 @@ def unverified_numbers(summary, frame, question):
 SUMMARY_PROMPT = """You explain database query results to a non-technical reader.
 
 Write one to three short sentences that directly answer the question.
-- Use only numbers that appear in the result table. You may add thousands separators and round decimals to 2 places.
+- Use only numbers that appear in the result table, copied exactly as written there (keep the commas where they are).
 - Do not abbreviate (no "k" or "million"), add up, subtract or otherwise calculate new numbers.
 - Do not add currency symbols or units ($, Rs, kg); the data does not say which apply.
-- Do not guess causes or mention SQL, tables or columns by their technical names.
-- If the result has no rows, say that no data matched the question."""
+- Do not guess causes or mention SQL, tables or columns by their technical names."""
+
+
+# Added only when the result shows a '(blank)' cell: as a standing rule
+# the model copied its wording into answers that had no blank at all
+# ("No recorded units sold" for North | 3).
+BLANK_LABEL_RULE = ("\n- A '(blank)' cell is a group whose value is missing; call that "
+                    "group \"no recorded <label>\" and still give its numbers.")
 
 
 SUMMARY_SCHEMA = {
@@ -157,14 +166,80 @@ SUMMARY_SCHEMA = {
 }
 
 
+def display_value(value):
+    """
+    A cell as the summary should write it. Numbers come pre-formatted
+    (585250 -> 585,250) so the model copies them instead of inserting
+    separators itself, which small models get wrong ("5,852,50").
+    """
+
+    # A blank label must stay visible, or the model shifts the numbers of
+    # the rows that follow onto the wrong labels.
+    if value is None or (isinstance(value, numbers.Number) and math.isnan(value)):
+        return "(blank)"
+
+    if isinstance(value, (bool, numpy.bool_)) or not isinstance(value, numbers.Number):
+        return str(value)
+
+    if 0 < abs(value) < 1:
+        return f"{value:.4g}"            # keep small shares readable
+
+    return format_number(value)
+
+
 def result_as_text(frame):
+    """Result rows as a ' | ' table (commas belong to the numbers)."""
+
     shown = frame.head(SUMMARY_MAX_ROWS)
-    text = shown.to_csv(index=False)
+    lines = [" | ".join(str(column) for column in shown.columns)]
+    lines += [" | ".join(display_value(value) for value in row)
+              for row in shown.itertuples(index=False)]
+    text = "\n".join(lines) + "\n"
 
     if len(frame) > len(shown):
         text += f"... ({len(frame)} rows in total)\n"
 
     return text
+
+
+CURRENCY_SYMBOLS = "$€£₹¥"
+
+
+def drop_invented_currency(summary, frame):
+    """'$1,250' -> '1,250' unless the result itself shows that symbol."""
+
+    shown = result_as_text(frame)
+
+    for symbol in CURRENCY_SYMBOLS:
+        if symbol not in shown:
+            summary = re.sub(rf"{re.escape(symbol)}\s?(?=-?\d)", "", summary)
+
+    return summary
+
+
+def summary_problem(summary, frame):
+    """
+    What is wrong with a summary the number check cannot catch, as a
+    correction for the model; None when it reads as a description.
+    """
+
+    # '2.06 | cut | color ...': the result table copied back.
+    if "|" in summary or summary.count("\n") >= 3:
+        return "Do not copy the table. Describe the result in one to three plain sentences."
+
+    if not frame.empty and re.search(r"\bno (data|rows?|results?)\b", summary, re.IGNORECASE):
+        return (f"The result has {len(frame)} rows, so data did match. A '(blank)' "
+                "label is a group without a value. Describe the rows.")
+
+    # The answer lost its numbers although the result has some.
+    shown = frame.head(SUMMARY_MAX_ROWS)
+    result_has_numbers = any(numbers_in_text(display_value(value))
+                             for row in shown.itertuples(index=False) for value in row)
+
+    if result_has_numbers and not numbers_in_text(summary):
+        return "Answer the question with the numbers from the result table."
+
+    return None
 
 
 def template_summary(frame, spec):
@@ -177,10 +252,17 @@ def template_summary(frame, spec):
         return f"{readable(spec['y'])}: {format_number(frame[spec['y']].iloc[0])}."
 
     if spec["type"] == "bar":
-        top = frame.sort_values(spec["x"], ascending=False).iloc[0]
-        return (f"The result has {len(frame)} rows. The highest "
-                f"{readable(spec['x']).lower()} is {top[spec['y']]} with "
-                f"{format_number(top[spec['x']])}.")
+        ranked = frame.sort_values(spec["x"], ascending=False)
+        top = ranked.iloc[0]
+        text = (f"{top[spec['y']]} has the highest {readable(spec['x']).lower()} "
+                f"({format_number(top[spec['x']])})")
+
+        if len(ranked) > 1:
+            low = ranked.iloc[-1]
+            text += (f" and {low[spec['y']]} the lowest "
+                     f"({format_number(low[spec['x']])})")
+
+        return f"{text}, across {len(frame)} groups."
 
     return f"The result has {len(frame)} rows; see the table and chart."
 
@@ -196,21 +278,35 @@ def summarize(settings, question, sql, frame, spec):
         return {"summary": template_summary(frame, spec), "verified": True,
                 "source": "template", "attempts": 0, "rejected_numbers": []}
 
+    result_text = result_as_text(frame)
+    system = SUMMARY_PROMPT + (BLANK_LABEL_RULE if "(blank)" in result_text else "")
     messages = [
-        {"role": "system", "content": SUMMARY_PROMPT},
+        {"role": "system", "content": system},
         {"role": "user", "content": f"Question: {question}\n\nSQL: {sql}\n\n"
-                                    f"Result:\n{result_as_text(frame)}"},
+                                    f"Result:\n{result_text}"},
     ]
     rejected = []
 
     for attempt in (1, 2):
+        # Out of time for this question: use the template below.
+        if past_deadline(settings):
+            break
+
         try:
             answer, _ = chat_json(settings, messages, SUMMARY_SCHEMA)
 
         except (ValueError, *MODEL_ERRORS):
             break                        # fall back to the template below
 
-        summary = answer["summary"].strip()
+        summary = drop_invented_currency(answer["summary"].strip(), frame)
+
+        problem = summary_problem(summary, frame)
+
+        if problem:
+            messages += [{"role": "assistant", "content": json.dumps(answer)},
+                         {"role": "user", "content": problem}]
+            continue
+
         bad = unverified_numbers(summary, frame, question)
 
         if not bad:
@@ -221,8 +317,10 @@ def summarize(settings, question, sql, frame, spec):
         messages += [
             {"role": "assistant", "content": json.dumps(answer)},
             {"role": "user", "content":
-                f"These numbers are not in the result: {bad}. Rewrite the "
-                "summary using only numbers copied from the result."},
+                f"These numbers are not in the result: "
+                f"{[format_number(number) for number in bad]}. Rewrite the summary, "
+                "copying every number character for character from the result "
+                "table above."},
         ]
 
     return {"summary": template_summary(frame, spec), "verified": True,

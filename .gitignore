@@ -39,3 +39,22 @@ desktop.ini
 
 # ---- Temporary files ---------------------------------------
 *.tmp
+
+# ---- Claude Code local settings ----------------------------
+.claude/
+
+# ---- Document review reports (working notes) ---------------
+zoom_out_report.md
+comprehension_report.md
+critic_report.md
+intermediate_zoom_out_report.md
+goldfish_review_report.md
+
+# ---- Streamlit secrets (config.toml stays tracked) ---------
+.streamlit/secrets.toml
+
+# ---- Test and tool caches ----------------------------------
+.coverage
+htmlcov/
+.mypy_cache/
+.ruff_cache/

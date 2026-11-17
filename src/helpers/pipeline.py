@@ -6,6 +6,8 @@
 #   A. ingest_dataset()   upload -> clean -> SQLite -> profile -> schema
 #   B. answer_question()  question -> guardrails -> SQL -> check ->
 #                         safe execution, with self-correction retries
+#                         (structure questions such as "what columns are
+#                         there?" are answered from the profile, no SQL)
 #   C. ask_in_chat()      guardrail on the typed text -> follow-up
 #                         rewrite -> B -> stored turn
 #   D. run_question()     C + chart, checked summary and caveats
@@ -17,17 +19,19 @@
 
 import json
 import logging
+import re
 import time
-from datetime import datetime
 from pathlib import Path
 
-from config import MAX_OUTPUT_TOKENS, RETRY_TOKEN_RESERVE
+from config import ASK_TIME_BUDGET_SECONDS, MAX_OUTPUT_TOKENS, RETRY_TOKEN_RESERVE
 from src.helpers.answer_summary import build_caveats, summarize
 from src.helpers.chart_builder import build_figure, choose_chart
 from src.helpers.chat_memory import (
     add_turn,
+    save_presentation,
     create_chat,
     get_chat,
+    now,
     recent_history,
     rewrite_question,
     sql_context,
@@ -36,7 +40,14 @@ from src.helpers.data_cleaner import load_and_clean
 from src.helpers.data_profiler import allowed_tables, build_schema_text, profile_dataset
 from src.helpers.input_guardrails import check_question, check_table_limits
 from src.helpers.logging_config import write_trace
-from src.helpers.model_client import MODEL_ERRORS
+from src.helpers.message_intent import (
+    NO_EARLIER_ANSWER,
+    WRITE_REPLY,
+    classify_message,
+    is_write_request,
+)
+from src.helpers.schema_answer import is_schema_question, mentions_schema_sql, schema_answer
+from src.helpers.model_client import MODEL_ERRORS, past_deadline
 from src.helpers.sql_executor import execute_sql
 from src.helpers.sql_generator import (
     build_messages,
@@ -54,10 +65,6 @@ logger = logging.getLogger(__name__)
 # ============================================================
 # 1. STATUS FILES
 # ============================================================
-
-def _now():
-    return datetime.now().isoformat(timespec="seconds")
-
 
 def read_json(path):
     """Read a JSON file; ValueError when it is corrupt."""
@@ -100,8 +107,8 @@ def write_status(paths, status, stage, **fields):
     previous = read_status(paths) or {}
     data = {**previous, **fields, "dataset_id": paths["dataset_id"],
             "status": status, "stage": stage,
-            "created_at": previous.get("created_at", _now()),
-            "updated_at": _now()}
+            "created_at": previous.get("created_at", now()),
+            "updated_at": now()}
 
     write_json(paths["status"], data)
 
@@ -197,10 +204,28 @@ def load_dataset(paths):
 # and is then accepted; a repeated failing query stops early; a refusal
 # is final; a model timeout ends as a clean failure.
 
-def error_feedback(error):
-    return (f"That query failed: {error}\n"
-            "Write a corrected query. Use only the tables and columns in the "
-            "schema, and copy category values exactly.")
+def error_feedback(error, profile=None):
+    """
+    The error for the model. For an unknown column the real column names
+    are listed: small models otherwise keep reusing a name (for example
+    one from the prompt's examples) on every retry.
+    """
+
+    feedback = (f"That query failed: {error}\n"
+                "Write a corrected query. Use only the tables and columns in the "
+                "schema, and copy category values exactly.")
+
+    missing = re.search(r"no such column: ([\w.\"]+)", str(error))
+
+    if profile and missing:
+        tables = "; ".join(f"{name}: {', '.join(table['columns'])}"
+                           for name, table in profile["tables"].items())
+        feedback += (f"\n{missing.group(1)} does not exist, so remove it from the query. "
+                     f"The only columns that exist are -> {tables}. "
+                     "To count rows use COUNT(*), or SUM(CASE WHEN ... THEN 1 ELSE 0 END) "
+                     "to count rows that meet a condition.")
+
+    return feedback
 
 
 EMPTY_RESULT_FEEDBACK = (
@@ -245,6 +270,38 @@ def fit_messages(settings, dataset, question, context=None):
     return None, None
 
 
+def dataset_columns(profile):
+    """Every column name of the cleaned tables."""
+
+    return [name for table in profile["tables"].values() for name in table["columns"]]
+
+
+def normalize_sql(sql):
+    """Compare queries ignoring spacing, case and a trailing ';'."""
+
+    return re.sub(r"\s+", " ", str(sql or "")).strip().rstrip(";").strip().lower()
+
+
+def answer_from_schema(outcome, dataset, attempt=None):
+    """
+    Answer a structure question ("what columns are there?") from the
+    profile. The guardrails block pragma_* and sqlite_master, so SQL
+    could only fail here.
+    """
+
+    answer = schema_answer(dataset["profile"], dataset["allowed_tables"])
+
+    if attempt is not None:
+        attempt["outcome"] = "schema_redirect"
+
+    outcome.update(status="schema", sql=None, frame=answer["frame"],
+                   row_count=len(answer["frame"]), truncated=False,
+                   schema_summary=answer["summary"],
+                   suggestions=answer["suggestions"], message=None)
+
+    return outcome
+
+
 def answer_question(settings, paths, question, first_answer=None, context=None):
     """
     Question -> checked, executed, self-corrected SQL result.
@@ -256,7 +313,8 @@ def answer_question(settings, paths, question, first_answer=None, context=None):
     Returns:
         {"status", "question", "sql", "plan", "frame", "row_count",
          "truncated", "attempts", "message", "seconds"}
-        status: answered | empty | refused | blocked | failed
+        status: answered | empty | schema | refused | blocked | failed
+        A schema answer also has "schema_summary" and "suggestions".
     """
 
     started = time.perf_counter()
@@ -276,7 +334,18 @@ def answer_question(settings, paths, question, first_answer=None, context=None):
     allowed = dataset["allowed_tables"]
     db_path = paths["database"]
 
-    # Step 1b: the prompt must fit the model's context.
+    # Step 1a: a request to change the data is refused before any SQL
+    # (ask_in_chat already catches it; this covers direct callers such as
+    # the evaluation).
+    if is_write_request(question):
+        outcome.update(status="refused", message=WRITE_REPLY)
+        return finish(outcome, started, settings, paths)
+
+    # Step 1b: questions about the structure are answered without SQL.
+    if is_schema_question(question):
+        return finish(answer_from_schema(outcome, dataset), started, settings, paths)
+
+    # Step 1c: the prompt must fit the model's context.
     messages, schema_detail = fit_messages(settings, dataset, question, context)
 
     if messages is None:
@@ -288,10 +357,17 @@ def answer_question(settings, paths, question, first_answer=None, context=None):
         logger.warning("Schema text shortened to %r to fit num_ctx=%d (%s)",
                        schema_detail, settings["num_ctx"], paths["dataset_id"])
 
-    previous_sql = None
+    tried_sql = set()            # every query already run, normalised
     empty_retry_used = False
 
     for attempt_number in range(1, settings["max_retries"] + 2):
+        # The question's time budget is used up: start no new model call.
+        if past_deadline(settings):
+            outcome["message"] = ("This question took too long to answer. Try a "
+                                  "simpler or more specific question.")
+            outcome["timed_out"] = True
+            return finish(outcome, started, settings, paths)
+
         attempt = {"attempt": attempt_number}
         outcome["attempts"].append(attempt)
 
@@ -327,6 +403,16 @@ def answer_question(settings, paths, question, first_answer=None, context=None):
             outcome.update(status="refused", message=answer["plan"])
             return finish(outcome, started, settings, paths)
 
+        # Step 3b: the model reached for SQLite's catalog (pragma_table_info,
+        # sqlite_master), which is always blocked: answer from the profile.
+        if mentions_schema_sql(sql):
+            return finish(answer_from_schema(outcome, dataset, attempt),
+                          started, settings, paths)
+
+        # A query tried before (not only the last one) would fail the same way.
+        repeated = normalize_sql(sql) in tried_sql
+        tried_sql.add(normalize_sql(sql))
+
         # Step 4: static check, then execution.
         sql_check = check_sql(sql, allowed)
 
@@ -346,7 +432,7 @@ def answer_question(settings, paths, question, first_answer=None, context=None):
 
         # Step 5b: empty result: one second look, then accept.
         if error is None:
-            if empty_retry_used or sql == previous_sql:
+            if empty_retry_used or repeated:
                 attempt["outcome"] = "empty_accepted"
                 outcome.update(status="empty", frame=result["frame"],
                                message="The query ran and no rows match.")
@@ -356,15 +442,15 @@ def answer_question(settings, paths, question, first_answer=None, context=None):
             empty_retry_used = True
             feedback = EMPTY_RESULT_FEEDBACK
 
-        # Step 5c: error: stop if the model repeats the same query.
+        # Step 5c: error: stop if the model repeats any earlier query.
         else:
             attempt.update(outcome="sql_check_failed" if not sql_check["ok"]
                            else "sql_error", error=error)
 
-            if sql == previous_sql:
+            if repeated:
                 break
 
-            feedback = error_feedback(error)
+            feedback = error_feedback(error, dataset["profile"])
 
         # Step 6: send the attempt and the feedback back to the model.
         messages = messages + [
@@ -372,7 +458,6 @@ def answer_question(settings, paths, question, first_answer=None, context=None):
                 {"plan": answer["plan"], "can_answer": True, "sql": sql})},
             {"role": "user", "content": feedback},
         ]
-        previous_sql = sql
 
     outcome["message"] = ("Could not produce a working query: "
                           + (outcome["attempts"][-1].get("error") or "unknown error"))
@@ -386,7 +471,7 @@ def finish(outcome, started, settings, paths):
     outcome["seconds"] = round(time.perf_counter() - started, 2)
 
     write_trace(paths["trace_log"], {
-        "time": datetime.now().isoformat(timespec="seconds"),
+        "time": now(),
         "model": settings["model"],
         "dataset": paths["dataset_id"],
         "question": outcome["question"],
@@ -407,6 +492,46 @@ def finish(outcome, started, settings, paths):
 # ============================================================
 # 4. C. ASKING INSIDE A CHAT
 # ============================================================
+
+def clarify_outcome(question, reply):
+    """A reply that asks the user to rephrase; no SQL was run."""
+
+    return {"status": "clarify", "question": question, "message": reply,
+            "attempts": [], "row_count": 0, "sql": None, "plan": None,
+            "frame": None, "standalone_question": None, "uses_history": False}
+
+
+def redraw_last_answer(settings, paths, dataset, last_turn, question, chart):
+    """
+    "Make it a pie chart": re-run the previous answer's stored SQL
+    (checked and read-only, as for a download) so it can be drawn as the
+    requested chart. No new SQL is written.
+    """
+
+    started = time.perf_counter()
+    allowed = dataset["allowed_tables"]
+    sql = last_turn["sql"]
+    outcome = {"status": "failed", "question": question, "sql": sql,
+               "plan": f"Redraw the previous answer as a {chart.replace('_', ' ')} chart.",
+               "frame": None, "row_count": 0, "truncated": False, "attempts": [],
+               "message": None,
+               "standalone_question": last_turn["standalone_question"] or last_turn["question"],
+               "uses_history": True}
+
+    sql_check = check_sql(sql, allowed)
+    result = (execute_sql(paths["database"], sql, allowed) if sql_check["ok"]
+              else {"ok": False, "error": sql_check["reason"]})
+
+    if not result["ok"]:
+        outcome["message"] = f"The previous answer could not be redrawn: {result['error']}"
+        return finish(outcome, started, settings, paths)
+
+    outcome.update(status="answered" if result["row_count"] else "empty",
+                   frame=result["frame"], row_count=result["row_count"],
+                   truncated=result["truncated"])
+
+    return finish(outcome, started, settings, paths)
+
 
 def ask_in_chat(settings, paths, chat_id, question, use_memory=True):
     """
@@ -443,20 +568,48 @@ def ask_in_chat(settings, paths, chat_id, question, use_memory=True):
             return outcome
 
     else:
-        if chat_id is None:
-            chat_id = create_chat(paths["chats"], check["question"])
+        dataset = load_dataset(paths)
+        columns = dataset_columns(dataset["profile"])
+        history = (recent_history(paths["chats"], chat_id)
+                   if use_memory and chat_id is not None else [])
 
-        # Step 2: rewrite with history.
-        history = recent_history(paths["chats"], chat_id) if use_memory else []
-        rewrite = rewrite_question(settings, history, check["question"])
-        context = sql_context(history) if rewrite["uses_history"] else None
+        # Step 1b: not every message is a data question ("what", "that's
+        # wrong", "make it a pie chart"); those never reach the rewrite.
+        intent = classify_message(check["question"], columns)
 
-        # Step 3: the retry loop on the standalone question.
-        outcome = answer_question(settings, paths, rewrite["standalone_question"],
-                                  context=context)
-        outcome.update(question=check["question"],
-                       standalone_question=rewrite["standalone_question"],
-                       uses_history=rewrite["uses_history"])
+        if intent["intent"] == "chart_change" and not history:
+            intent = {**intent, "intent": "clarify", "reply": NO_EARLIER_ANSWER}
+
+        if intent["intent"] in {"vague", "feedback", "clarify", "write_request"}:
+            outcome = clarify_outcome(check["question"], intent["reply"])
+
+            # A request to change the data is refused, not clarified.
+            if intent["intent"] == "write_request":
+                outcome["status"] = "refused"
+
+            if chat_id is None:        # nothing to store: no new chat for it
+                outcome.update(seconds=round(time.perf_counter() - started, 2),
+                               chat_id=None, position=None)
+                return outcome
+
+        elif intent["intent"] == "chart_change":
+            outcome = redraw_last_answer(settings, paths, dataset, history[-1],
+                                         check["question"], intent["chart"])
+
+        else:
+            if chat_id is None:
+                chat_id = create_chat(paths["chats"], check["question"])
+
+            # Step 2: rewrite with history.
+            rewrite = rewrite_question(settings, history, check["question"], columns)
+            context = sql_context(history) if rewrite["uses_history"] else None
+
+            # Step 3: the retry loop on the standalone question.
+            outcome = answer_question(settings, paths, rewrite["standalone_question"],
+                                      context=context)
+            outcome.update(question=check["question"],
+                           standalone_question=rewrite["standalone_question"],
+                           uses_history=rewrite["uses_history"])
 
     outcome["seconds"] = round(time.perf_counter() - started, 2)
     outcome["chat_id"] = chat_id
@@ -475,21 +628,31 @@ def present_answer(settings, outcome, profile):
 
     Returns:
         {"chart", "figures": {"light", "dark"} (Plotly JSON or None),
-         "summary", "caveats"}
+         "summary", "caveats", "suggestions"}
     """
 
     frame = outcome.get("frame")
+    no_figures = {"light": None, "dark": None}
+
+    # Structure answer: the column table, its sentence and question ideas.
+    if outcome["status"] == "schema":
+        return {"chart": {"type": "table", "x": None, "y": None, "color": None,
+                          "title": None, "note": None},
+                "figures": no_figures,
+                "summary": {"summary": outcome["schema_summary"], "verified": True,
+                            "source": "schema", "attempts": 0, "rejected_numbers": []},
+                "caveats": [], "suggestions": outcome["suggestions"]}
 
     # Nothing to show: the message explains why (blocked / refused / failed).
     if outcome["status"] not in {"answered", "empty"} or frame is None:
-        return {"chart": {"type": "none"}, "figures": {"light": None, "dark": None},
+        return {"chart": {"type": "none"}, "figures": no_figures,
                 "summary": {"summary": outcome.get("message"), "verified": True,
                             "source": "message", "attempts": 0,
                             "rejected_numbers": []},
-                "caveats": []}
+                "caveats": [], "suggestions": []}
 
     question = outcome.get("standalone_question") or outcome["question"]
-    spec = choose_chart(frame, question)
+    spec = choose_chart(frame, question, outcome["question"])
     figures = {}
 
     # The answer is already stored; a chart that cannot be drawn must
@@ -511,6 +674,7 @@ def present_answer(settings, outcome, profile):
         "figures": figures,
         "summary": summarize(settings, question, outcome["sql"], frame, spec),
         "caveats": build_caveats(outcome["sql"], profile, outcome.get("truncated", False)),
+        "suggestions": [],
     }
 
 
@@ -520,7 +684,15 @@ def run_question(settings, paths, chat_id, question, use_memory=True):
     follow-up rewrite, SQL with retries, stored turn, chart, summary.
     """
 
+    # One time budget for every model call this question makes.
+    settings = {**settings, "deadline": time.monotonic() + ASK_TIME_BUDGET_SECONDS}
+
     outcome = ask_in_chat(settings, paths, chat_id, question, use_memory)
     presented = present_answer(settings, outcome, load_dataset(paths)["profile"])
+
+    # Stored with the turn so the chat redraws with its summary and chart.
+    if outcome.get("position") is not None:
+        save_presentation(paths["chats"], outcome["chat_id"], outcome["position"],
+                          presented)
 
     return {**outcome, **presented}

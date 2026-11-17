@@ -38,6 +38,17 @@ logger = logging.getLogger(__name__)
 MODEL_ERRORS = (httpx.HTTPError, ollama.ResponseError)
 
 
+def past_deadline(settings):
+    """
+    True when the question's time budget is used up. The deadline
+    (time.monotonic() seconds) is set per question by run_question();
+    without one there is no limit.
+    """
+
+    deadline = settings.get("deadline")
+    return deadline is not None and time.monotonic() >= deadline
+
+
 def get_client(timeout=CONNECT_TIMEOUT):
     """Ollama client for OLLAMA_URL."""
 
