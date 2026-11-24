@@ -1,4 +1,4 @@
-# Text-to-SQL Data Analyst
+# LocalAnalyst: Text-to-SQL Data Analyst
 
 Upload a data file, ask questions about it in plain English and get back a
 table, a chart and a short written answer. A local language model (Ollama)
@@ -34,15 +34,15 @@ This project is a GenAI data analyst that:
 | Area | What it does |
 |---|---|
 | File types | CSV, TSV, Excel (.xlsx, one table per sheet), JSON, Parquet; up to 50 MB |
-| Auto cleaning | Header detection, snake_case column names, null placeholders, numbers/dates/booleans stored as text, thousands separators, dates typed in many formats ("23rd December of 1966", "22 Feb 04"; each guess is listed), merged spelling variants, safe duplicate removal. Cells holding several values ("Crime, Drama") get a second table with one row per value, joined on `row_id`. The original values are kept in a `<table>_raw` table |
-| Cleaning review | Right after upload, before the first question: the judgment calls the cleaning left open (missing values, look-alike values, numbers stored as text, guessed dates, list columns, extreme values), each with options and a suggested pick. **Apply** re-cleans the original file with the choices; **Skip** keeps the automatic cleaning. Decided from values and types, never column names; no model call. Can be changed later in the Data tab, or from the chat: "fill age with the median" or "drop rows with missing email" shows a confirm button, then re-cleans the same way |
+| Auto cleaning | Header detection, snake_case column names, null placeholders, numbers/dates/booleans stored as text, thousands separators, numbers written as words or with typos ("two hundred", "12k", "1.5 lakh"), broken text encoding ("cafÃ©" -> "café"), dates typed in many formats ("23rd December of 1966", "22 Feb 04"; each guess is listed), merged spelling variants, safe duplicate removal. Cells holding several values ("Crime, Drama") get a second table with one row per value, joined on `row_id`. The original values are kept in a `<table>_raw` table |
+| Cleaning review | Right after upload, before the first question: the judgment calls the cleaning left open (missing values, look-alike values, numbers stored as text, guessed dates, list columns, extreme values), each with options and a suggested pick. **Apply** re-cleans the original file with the choices; **Skip** keeps the automatic cleaning. Decided from values and types, never column names. The model only suggests the right spelling of look-alike values and values that mean the same ("Unrated" / "Not Rated"); its suggestions are checked and you pick. Can be changed later in the Data tab, or from the chat: "fill age with the median" or "drop rows with missing email" shows a confirm button, then re-cleans the same way (0, null, empty and similar words all count as missing). Every cleaned table can be downloaded as CSV or Excel |
 | Text-to-SQL | Ollama `qwen2.5` (7B on GPU, 3B on CPU, chosen at startup), JSON output (plan, can_answer, sql), few-shot prompt with the dataset's schema |
-| Self-correction | Errors and failed checks go back to the model, up to 3 retries; an empty result gets a second look; the loop stops when the model repeats any query it already tried; refusals are final |
+| Self-correction | Errors and failed checks go back to the model: up to 3 retries on the 7B, 2 on the 3B. Shape checks catch common small-model mistakes before an answer is accepted (COUNT where a quantity must be summed, a breakdown column dropped, a wrong join key, raw dates where years or decades were asked for) and send one hint each. An empty result gets a second look; the loop stops when the model repeats any query it already tried; refusals are final |
 | Structure questions | "What columns are there?", "describe the data", "list the fields" are answered from the profile without SQL or a model call: one row per column (type, example, missing) plus 3–5 suggested questions built from the column types. If the model ever writes `pragma_table_info` / `sqlite_master` SQL (always blocked), the same answer is returned instead of retrying |
 | Guardrails | Question checks (length, injection phrases, raw SQL), static SQL check (single SELECT/WITH, no write keywords, allowed tables only), read-only connection with a SQLite authorizer, 10 s query timeout, 1,000-row cap, a 240 s time budget per question (no new model call after it) |
-| Charts | Rule-based from the result's shape: stat tile, line, small multiples, bar, grouped bar, scatter, histogram. Ask for a type ("as a pie chart", donut, column, area, stacked, line, bar, scatter, histogram) and it is drawn when the result fits it, otherwise a note says why. Lists of rows stay a table (Plotly, light and dark palettes) |
+| Charts | Rule-based from the result's shape: stat tile, line, small multiples, bar, grouped bar, scatter, histogram. Ask for a type ("as a pie chart", donut, column, area, stacked, line, bar, scatter, histogram) and it is drawn when the result fits it, otherwise a note says why. Bars carry number labels; a pie keeps the 5 largest slices plus "Other"; at most 6 series per chart. Lists of rows stay a table (Plotly, light and dark themes in the app's palette) |
 | Summary | 1–3 sentences (a longer one is sent back to be shortened); numbers are given to the model pre-formatted and every number must appear in the result, otherwise a fixed template is used. Caveats come from the cleaning flags. Summary, caveats and chart are stored with each turn |
-| Chat memory | Chats per dataset; follow-ups rewritten into standalone questions. Messages that are not data questions are sorted out first: "what" or "that's wrong" get a reply asking what to change (status `clarify`, no SQL), "make it a pie chart" redraws the previous answer without new SQL, "top 5 rows" shows the stored rows without a model call, and "delete the North rows" is refused before any SQL is written |
+| Chat memory | Chats per dataset; follow-ups rewritten into standalone questions. Messages that are not data questions are sorted out first: "what" or "that's wrong" get a reply asking what to change (status `clarify`, no SQL), "make it a pie chart" redraws the previous answer without new SQL, "top 5 rows" shows the stored rows without a model call, "first and last 5 rows" shows two tables, a message with two requests is split and answered one by one, and "delete the North rows" is refused before any SQL is written |
 | Evaluation | Held-out questions, follow-ups, hostile prompts and messy files |
 | API | FastAPI with Swagger UI and a Postman collection |
 | UI | Streamlit app that talks only to the API |
@@ -64,10 +64,10 @@ LocalAnalyst/
 │   └── output_data/evaluation/latest_run/   evaluation reports
 ├── datasets/                  one workspace per upload (created at runtime)
 ├── notebook/                  01–08 prototype notebooks, one per stage
-├── postman/                   Postman collection for every route
+├── postman/                   Postman collection and environment for every route
 ├── src/
 │   ├── api/                   one file per route + common.py
-│   ├── evaluation/            run_evaluation.py, result_matching.py
+│   ├── evaluation/            run_evaluation.py, run_stress.py, result_matching.py
 │   ├── helpers/               one file per pipeline stage + pipeline.py
 │   ├── main/main.py           FastAPI application
 │   └── ui/streamlit_app.py    Streamlit frontend
@@ -173,6 +173,7 @@ Question ─► question guardrail ─► rewrite follow-up (chat memory)
    |---|---|---|
    | `OLLAMA_URL` | `http://localhost:11434` | Where Ollama runs |
    | `MODEL_PROFILE` | `auto` | `auto` (7B if it fits fully on the GPU, else 3B; needs both models), `gpu` (7B) or `cpu` (3B) |
+   | `API_PORT` | `8765` | The API's port, read by the `.bat` files and the UI. Not 8000: Windows often reserves ports near it (WinError 10013) |
    | `DATASETS_DIR` | `datasets/` | Where uploaded datasets are stored |
 
 ## Running
@@ -183,12 +184,12 @@ Double-click these in the project folder:
 
 | File | What it does |
 |---|---|
-| `setup.bat` | One-time setup: creates `.venv`, installs `requirements.txt`, copies `.env.example` to `.env`, pulls the Ollama models |
-| `run_all.bat` | Starts the API, waits until it is ready, then starts the UI and opens Swagger UI |
+| `setup.bat` | One-time setup: creates `.venv`, installs `requirements.txt`, copies `.env.example` to `.env`, starts Ollama and pulls the model that fits |
+| `run_all.bat` | Starts the API, waits until it answers, then starts the UI, which opens in the browser |
 | `run_api.bat` | Starts only the API (http://127.0.0.1:8765) |
 | `run_ui.bat` | Starts only the UI (http://localhost:8501); the API must be running |
 
-Ollama must be running first. Close the API and UI windows to stop them.
+`run_api.bat` and `run_all.bat` start Ollama when it is not running. Close the API and UI windows to stop them. If the API does not start, run `run_api.bat` on its own to read the error; the log is `data/logs/app.log`.
 
 ### Manually
 
@@ -197,7 +198,7 @@ Start Ollama first, then:
 **1. API**
 
 ```bash
-python -m uvicorn src.main.main:app --reload
+python -m uvicorn src.main.main:app --port 8765 --reload
 ```
 
 On startup the API checks Ollama and picks the model; it stops with a clear
@@ -224,13 +225,15 @@ Open http://localhost:8501. Set `API_URL` if the API is not at
   *Prepare downloads*. Reopened chats show the stored summary and chart.
   Ask "what columns are there?" to see every column with its type and an
   example, plus suggested questions you can click to ask.
-- **Data tab:** what the cleaning changed and flagged, the column profile and
-  the schema the model sees.
+- **Data tab:** what the cleaning changed, the flags still open and the ones
+  already decided, the column profile, the schema the model sees, and a
+  download of each cleaned table.
 
 **3. Postman**
 
-Import `postman/Text-to-SQL.postman_collection.json` (and optionally the
-`LocalAnalyst - local` environment in `postman/`). Its 25 requests run in the
+Import `postman/Text-to-SQL.postman_collection.json` and
+`postman/LocalAnalyst.postman_environment.json`, then pick the
+`LocalAnalyst - local` environment (`baseUrl` = `http://127.0.0.1:8765`). Its 25 requests run in the
 order the app uses them: health → upload `data/input_data/messy_sales.csv` →
 wrong file type → list → details → first look → cleaning review → apply the
 suggestions → download the cleaned table → ask → follow-up → chart change →
@@ -251,6 +254,7 @@ after them, and every request has tests. Set Postman's working directory
 | GET | `/datasets/{dataset_id}/preview?rows=5` | First rows of each table, a short description and starter questions (no model call) |
 | GET | `/datasets/{dataset_id}/review` | Cleaning decisions to review: options, suggested pick, last choice |
 | POST | `/datasets/{dataset_id}/review` | Apply `{"choices": {table: {column: {issue: option}}}}`, `{"use_suggestions": true}` or `{"skip": true}`; re-cleans the original file |
+| GET | `/datasets/{dataset_id}/tables/{table}/download?format=csv\|xlsx` | A whole cleaned table as CSV or Excel |
 | DELETE | `/datasets/{dataset_id}` | Delete a dataset |
 | POST | `/datasets/{dataset_id}/ask` | `{"question", "chat_id"?, "include_figures"?}` → SQL, rows, chart, summary, caveats, attempts |
 | GET | `/datasets/{dataset_id}/chats` | List chats, most recent first |
@@ -306,11 +310,11 @@ passes 28/28 checks on the held-out messy files. That score is somewhat
 optimistic, because two cleaning rules were fixed after the first run on those
 same files (it scored 25/28 before).
 
-**Stress set** (`data/input_data/eval/stress_questions.json`): 57 wordings small
-models tend to get wrong (count vs sum, average vs total, ranking, dates,
-partial names, multi-value columns, percentages, comparisons, top per group),
-graded the same way. qwen2.5:7b answers 56-57/57 (it varies by about one
-question between runs), qwen2.5-coder:7b 55/57, qwen2.5:3b 42/57. Run it for any installed model:
+**Stress set** (`data/input_data/eval/stress_questions.json`): 88 wordings small
+models tend to get wrong, over 7 files including a messy IMDB copy (count vs
+sum, average vs total, ranking, dates, partial names, multi-value columns,
+percentages, comparisons, negation, top per group), graded the same way.
+qwen2.5:7b-instruct answers 86/88 at 3.8 s per answer. Run it for any installed model:
 
 ```bash
 python -m src.evaluation.run_stress qwen2.5:7b-instruct qwen2.5:3b-instruct
@@ -321,8 +325,10 @@ the column names or row order. "Unsafe" means the data changed, or an answered
 query wrote data or read system or raw tables.
 
 **Known weak spots:** ambiguous measures ("which product sells best": units or sales?) are chosen
-without saying so; and "average salary of employees with a known salary"
-still differs from the expected answer for both 7B models.
+without saying so; "average salary of employees with a known salary" still
+differs from the expected answer for both 7B models; "compare Mouse and
+Keyboard" can come back as one row (no GROUP BY); and "movies that are both
+Crime and Drama" is often answered as either genre.
 
 ## Tests
 
@@ -330,8 +336,8 @@ still differs from the expected answer for both 7B models.
 python -m pytest
 ```
 
-284 tests cover cleaning, storage, guardrails, charts, summaries, memory, the
-pipeline and every API route. They need no model: the model calls are
+346 tests cover cleaning, the review step, storage, guardrails, message
+sorting, charts, summaries, memory, the pipeline and every API route. They need no model: the model calls are
 scripted.
 
 ## Notes
