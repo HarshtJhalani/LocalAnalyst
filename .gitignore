@@ -58,3 +58,31 @@ goldfish_review_report.md
 htmlcov/
 .mypy_cache/
 .ruff_cache/
+
+# Exported project guide
+LocalAnalyst_Project_Guide.pdf
+
+# ---- Postman app (account-specific) ------------------------
+# .postman/ links this folder to your Postman cloud workspace (IDs);
+# globals can hold tokens; collections/ and environments/ are the
+# app's own copies of the JSON files. The shared collection and
+# environment JSON files in postman/ stay tracked.
+.postman/
+postman/globals/
+postman/collections/
+postman/environments/
+
+# ---- Private keys and credentials --------------------------
+*.pem
+*.key
+*.p12
+*.pfx
+credentials*.json
+secrets*.json
+*.secret
+
+# ---- Local copies, backups and Office lock files -----------
+*.bak
+*.orig
+~$*
+nul
