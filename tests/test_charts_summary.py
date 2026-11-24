@@ -85,8 +85,8 @@ def test_summary_falls_back_to_template(monkeypatch):
     result = summarize({}, "Sales by city?", "SELECT ...", frame, choose_chart(frame))
 
     assert result["source"] == "template" and result["attempts"] == 2
-    assert result["summary"] == ("Pune has the highest sales (20) and Delhi the "
-                                 "lowest (10), across 2 groups.")
+    assert result["summary"] == ("Pune has the highest sales (20); Delhi has the "
+                                 "lowest of these 2 (10).")
 
 
 def test_caveats(sales):

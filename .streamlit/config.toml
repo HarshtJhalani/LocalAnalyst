@@ -5,3 +5,30 @@ maxUploadSize = 50
 
 [browser]
 gatherUsageStats = false
+
+# Brand palette: #092328 (deep), #12544F (teal), #2A835F (green), #8BBB92 (sage).
+# Streamlit follows the system light / dark setting; the charts use the
+# same colours (THEMES in src/helpers/chart_builder.py).
+[theme.light]
+primaryColor = "#2A835F"
+backgroundColor = "#ffffff"
+secondaryBackgroundColor = "#eaf2ed"
+textColor = "#092328"
+linkColor = "#12544F"
+greenColor = "#2A835F"
+borderColor = "#c3d3cb"
+
+[theme.dark]
+primaryColor = "#2A835F"
+backgroundColor = "#092328"
+secondaryBackgroundColor = "#0f3338"
+textColor = "#eef5f1"
+linkColor = "#8BBB92"
+greenColor = "#8BBB92"
+borderColor = "#22504a"
+
+[theme.light.sidebar]
+backgroundColor = "#eaf2ed"
+
+[theme.dark.sidebar]
+backgroundColor = "#0b2b30"

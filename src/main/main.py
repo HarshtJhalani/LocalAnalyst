@@ -6,12 +6,16 @@
 # Run from the project root:
 #   uvicorn src.main.main:app --reload
 #
-# Interactive docs: http://127.0.0.1:8000/docs
+# Interactive docs: http://127.0.0.1:8765/docs (API_PORT in .env)
 #
 # Routers (one file per route in src/api/):
 #   POST   /datasets                                     upload_dataset.py
 #   GET    /datasets                                     list_datasets.py
 #   GET    /datasets/{id}                                dataset_details.py
+#   GET    /datasets/{id}/preview                        dataset_preview.py
+#   GET    /datasets/{id}/review                         cleaning_review.py
+#   POST   /datasets/{id}/review                         cleaning_review.py
+#   GET    /datasets/{id}/tables/{table}/download        download_table.py
 #   DELETE /datasets/{id}                                delete_dataset.py
 #   POST   /datasets/{id}/ask                            ask_question.py
 #   GET    /datasets/{id}/chats                          list_chats.py
@@ -35,6 +39,9 @@ from src.helpers.model_selector import check_ollama, select_model
 from src.api.upload_dataset import router as upload_dataset_router
 from src.api.list_datasets import router as list_datasets_router
 from src.api.dataset_details import router as dataset_details_router
+from src.api.dataset_preview import router as dataset_preview_router
+from src.api.cleaning_review import router as cleaning_review_router
+from src.api.download_table import router as download_table_router
 from src.api.delete_dataset import router as delete_dataset_router
 from src.api.ask_question import router as ask_question_router
 from src.api.list_chats import router as list_chats_router
@@ -110,6 +117,9 @@ app = FastAPI(
 app.include_router(upload_dataset_router)
 app.include_router(list_datasets_router)
 app.include_router(dataset_details_router)
+app.include_router(dataset_preview_router)
+app.include_router(cleaning_review_router)
+app.include_router(download_table_router)
 app.include_router(delete_dataset_router)
 app.include_router(ask_question_router)
 app.include_router(list_chats_router)
@@ -139,4 +149,4 @@ def health():
 # ------------------------------------------------------------
 
 if __name__ == "__main__":
-    uvicorn.run("src.main.main:app", host="127.0.0.1", port=8000, reload=True)
+    uvicorn.run("src.main.main:app", host="127.0.0.1", port=API_PORT, reload=True)

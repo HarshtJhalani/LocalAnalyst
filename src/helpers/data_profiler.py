@@ -181,6 +181,7 @@ def profile_table(table, raw_table_name):
         },
         "correlations": find_correlations(frame, column_types),
         "flags": report["flags"],
+        "list_of": report.get("list_of"),
         "cleaning": {
             "rows_before": report["rows_before"],
             "rows_after": report["rows_after"],
@@ -256,6 +257,8 @@ def describe_column(name, column, detail="full"):
     elif kind == "date":
         parts.append(f"date 'YYYY-MM-DD', {column.get('min')} to {column.get('max')}"
                      if full else "date 'YYYY-MM-DD'")
+        # A full date, even when the name says "year": group by the part asked.
+        parts.append(f"year = strftime('%Y', {name})")
 
     elif kind == "datetime":
         parts.append(f"datetime 'YYYY-MM-DD HH:MM:SS', {column.get('min')} "
@@ -288,6 +291,11 @@ def describe_flag(flag):
     column, issue = flag["column"], flag["issue"]
     detail = flag["detail"].replace("; kept.", "").replace("; not merged.", "")
 
+    if flag.get("resolved"):
+        return None                      # the user's choice fixed it
+    if issue == "list_column":
+        return None                      # explained by the split table's note
+
     if issue == "missing_values":
         return None                      # already on the column line
     if issue == "duplicate_rows":
@@ -317,10 +325,36 @@ def build_schema_text(profile, detail="full"):
 
     blocks = []
 
+    # Keys the cleaning added to join split list tables (row_id): the model
+    # must not select or chart them as data.
+    join_keys = {(link["table"], link["key"]): child
+                 for child, table in profile["tables"].items()
+                 if (link := table.get("list_of"))}
+
     for table_name, table in profile["tables"].items():
         lines = [f"TABLE {table_name} ({table['rows']} rows)"]
-        lines += [describe_column(name, column, detail)
-                  for name, column in table["columns"].items()]
+
+        for name, column in table["columns"].items():
+            line = describe_column(name, column, detail)
+            child = join_keys.get((table_name, name)) or (
+                name == (table.get("list_of") or {}).get("key") and "the main table")
+
+            if child:
+                line += (f" | added by the cleaning, only to JOIN with {child}; "
+                         "never select or show it")
+            lines.append(line)
+
+        # A split list column: how to join it, in every detail level,
+        # since a query cannot be written correctly without it.
+        link = table.get("list_of")
+
+        if link:
+            lines.append(
+                f"  One row per single value of {link['table']}.{link['column']} "
+                f"(which holds several per cell, e.g. 'A, B'). To count single values "
+                f"JOIN {table_name} ON {table_name}.{link['key']} = "
+                f"{link['table']}.{link['key']} and group by "
+                f"{table_name}.{link['value']}.")
 
         warnings = ([text for text in map(describe_flag, table["flags"]) if text]
                     if detail == "full" else [])
@@ -333,6 +367,8 @@ def build_schema_text(profile, detail="full"):
 
     blocks.append(
         "SQL notes: SQLite dialect. Text comparisons are case-sensitive. "
+        "Dates are TEXT 'YYYY-MM-DD': per year use strftime('%Y', col), per month "
+        "strftime('%Y-%m', col), per decade (CAST(strftime('%Y', col) AS INTEGER) / 10) * 10. "
         "For median / standard deviation / percentile use "
         "median_of(json_group_array(col)), stdev_of(json_group_array(col)), "
         "percentile_of(json_group_array(col), 90)."

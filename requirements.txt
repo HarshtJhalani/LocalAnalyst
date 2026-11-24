@@ -12,7 +12,7 @@ fastapi==0.163.1
 uvicorn[standard]==0.54.0
 python-multipart==0.0.33
 
-# UI:  streamlit run src/ui/streamlit_app.py  (API_URL, default http://127.0.0.1:8000)
+# UI:  streamlit run src/ui/streamlit_app.py  (API_URL, default http://127.0.0.1:8765)
 streamlit==1.67.0
 
 # Tests:  python -m pytest  (httpx powers FastAPI's TestClient)

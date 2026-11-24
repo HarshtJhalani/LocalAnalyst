@@ -11,6 +11,8 @@ import pytest
 from fastapi.testclient import TestClient
 
 import src.api.common as common
+import src.api.cleaning_review as cleaning_review_route
+import src.api.dataset_preview as dataset_preview_route
 import src.api.list_datasets as list_datasets
 import src.api.upload_dataset as upload_dataset
 import src.helpers.pipeline as pipeline
@@ -43,6 +45,10 @@ def client(tmp_path, monkeypatch):
     monkeypatch.setattr(pipeline, "generate_sql_from_messages", fake_sql)
     monkeypatch.setattr(pipeline, "rewrite_question", lambda settings, history, question, columns=None: {
         "uses_history": False, "standalone_question": question, "seconds": 0})
+    monkeypatch.setattr(dataset_preview_route, "name_rows", lambda *args: "orders")
+    monkeypatch.setattr(cleaning_review_route, "pick_spellings",
+                        lambda settings, column, mapping: mapping)
+    monkeypatch.setattr(cleaning_review_route, "suggest_synonyms", lambda settings, profile: {})
     monkeypatch.setattr(pipeline, "summarize", lambda *args: {
         "summary": "s", "verified": True, "source": "template", "attempts": 0,
         "rejected_numbers": []})
@@ -80,6 +86,90 @@ def test_upload_list_details_delete(client):
 
     assert client.delete(f"/datasets/{dataset_id}").status_code == 200
     assert client.get(f"/datasets/{dataset_id}").status_code == 404
+
+
+def test_preview_after_upload(client):
+    dataset_id = upload(client).json()["dataset_id"]
+
+    table = client.get(f"/datasets/{dataset_id}/preview").json()["tables"][0]
+    assert table["table_name"] == "messy_sales"
+    assert len(table["rows"]) == 5 and "region" in table["columns"]
+    assert table["description"].startswith("32 rows and")
+    assert any("region" in question for question in table["suggestions"])
+
+    three = client.get(f"/datasets/{dataset_id}/preview", params={"rows": 3}).json()
+    assert len(three["tables"][0]["rows"]) == 3
+    assert client.get("/datasets/DS_20260101_000000_ABCD/preview").status_code == 404
+
+
+def test_top_rows_need_no_model(client, monkeypatch):
+    dataset_id = upload(client).json()["dataset_id"]
+
+    def no_model(*args, **kwargs):
+        raise AssertionError("the model must not be called")
+
+    monkeypatch.setattr(pipeline, "generate_sql_from_messages", no_model)
+    monkeypatch.setattr(pipeline, "rewrite_question", no_model)
+    monkeypatch.setattr(pipeline, "summarize", no_model)
+
+    answer = client.post(f"/datasets/{dataset_id}/ask",
+                         json={"question": "top 5 rows", "include_figures": False}).json()
+    assert answer["status"] == "answered" and answer["result"]["row_count"] == 5
+    assert answer["sql"].startswith("SELECT * FROM") and answer["chart"]["type"] == "table"
+    assert answer["summary"].startswith("The first 5 of 32 rows")
+
+    last = client.post(f"/datasets/{dataset_id}/ask",
+                       json={"question": "last 2 rows", "chat_id": answer["chat_id"]}).json()
+    assert "OFFSET 30" in last["sql"] and last["result"]["row_count"] == 2
+
+
+def test_download_cleaned_table(client):
+    dataset_id = upload(client).json()["dataset_id"]
+
+    csv = client.get(f"/datasets/{dataset_id}/tables/messy_sales/download")
+    assert csv.status_code == 200
+    assert "messy_sales_cleaned.csv" in csv.headers["content-disposition"]
+    lines = csv.content.decode("utf-8-sig").strip().splitlines()
+    assert len(lines) == 33 and "units_sold" in lines[0]          # header + 32 rows
+
+    xlsx = client.get(f"/datasets/{dataset_id}/tables/messy_sales/download",
+                      params={"format": "xlsx"})
+    assert xlsx.status_code == 200 and xlsx.content[:2] == b"PK"
+
+    for name in ("messy_sales_raw", "nope"):
+        assert client.get(f"/datasets/{dataset_id}/tables/{name}/download").status_code == 404
+
+
+def test_cleaning_review(client):
+    dataset_id = upload(client).json()["dataset_id"]
+
+    review = client.get(f"/datasets/{dataset_id}/review").json()
+    assert review["review_state"] == "pending"
+    missing = next(i for i in review["items"]
+                   if i["column"] == "units_sold" and i["issue"] == "missing_values")
+    assert missing["suggested"] == "fill_median" and missing["chosen"] is None
+
+    # A choice that is not an option is refused, nothing changes.
+    bad = {"messy_sales": {"units_sold": {"missing_values": "fill_unknown"}}}
+    assert client.post(f"/datasets/{dataset_id}/review",
+                       json={"choices": bad}).status_code == 400
+
+    good = {"messy_sales": {"units_sold": {"missing_values": "fill_median"}}}
+    applied = client.post(f"/datasets/{dataset_id}/review", json={"choices": good}).json()
+    assert applied["review_state"] == "done"
+    assert client.get(f"/datasets/{dataset_id}").json()["status"]["review"] == "done"
+
+    table = client.get(f"/datasets/{dataset_id}/preview", params={"rows": 50}).json()["tables"][0]
+    position = table["columns"].index("units_sold")
+    assert all(row[position] is not None for row in table["rows"])
+
+    again = client.get(f"/datasets/{dataset_id}/review").json()
+    assert next(i for i in again["items"] if i["id"] == missing["id"])["chosen"] == "fill_median"
+
+    assert client.post(f"/datasets/{dataset_id}/review",
+                       json={"use_suggestions": True}).status_code == 200
+    assert client.post(f"/datasets/{dataset_id}/review", json={"skip": True}).status_code == 200
+    assert client.post(f"/datasets/{dataset_id}/review", json={}).status_code == 400
 
 
 @pytest.mark.parametrize("name, content", [
@@ -265,3 +355,67 @@ def test_time_budget_stops_new_model_calls(client, monkeypatch):
 
     assert answer["status"] == "failed" and "took too long" in answer["message"]
     assert calls == [] and answer["attempts"] == []
+
+
+def test_cleaning_from_the_chat_needs_a_confirm(client):
+    dataset_id = upload(client).json()["dataset_id"]
+    ask = lambda question, chat=None: client.post(
+        f"/datasets/{dataset_id}/ask",
+        json={"question": question, "include_figures": False,
+              **({"chat_id": chat} if chat else {})}).json()
+
+    first = ask("fill units sold with the median")
+    assert first["status"] == "confirm" and first["sql"] is None
+    assert first["suggestions"] == ["Apply: fill the empty values of units_sold with the median"]
+    rows = client.get(f"/datasets/{dataset_id}/preview", params={"rows": 50}).json()
+    assert None in [row[rows["tables"][0]["columns"].index("units_sold")]
+                    for row in rows["tables"][0]["rows"]]          # nothing changed yet
+
+    done = ask(first["suggestions"][0], first["chat_id"])
+    assert done["status"] == "cleaned" and "Filled 2 missing values" in done["message"]
+    rows = client.get(f"/datasets/{dataset_id}/preview", params={"rows": 50}).json()
+    position = rows["tables"][0]["columns"].index("units_sold")
+    assert None not in [row[position] for row in rows["tables"][0]["rows"]]
+
+    assert ask("fill region with the median", first["chat_id"])["status"] == "clarify"
+    assert ask("delete the North rows", first["chat_id"])["status"] == "refused"
+
+
+def test_zero_in_a_fill_request_counts_as_missing(client):
+    dataset_id = upload(client).json()["dataset_id"]
+    ask = lambda question, chat=None: client.post(
+        f"/datasets/{dataset_id}/ask",
+        json={"question": question, "include_figures": False,
+              **({"chat_id": chat} if chat else {})}).json()
+
+    first = ask("fill median discount in rows where discount is 0")
+    assert first["status"] == "confirm" and "with 0" in first["message"]
+    assert first["suggestions"] == ["Apply: fill the empty and 0 values of discount_pct "
+                                    "with the median"]
+
+    done = ask(first["suggestions"][0], first["chat_id"])
+    assert done["status"] == "cleaned" and "values of 0 as missing" in done["message"]
+    table = client.get(f"/datasets/{dataset_id}/preview", params={"rows": 50}).json()["tables"][0]
+    position = table["columns"].index("discount_pct")
+    assert 0 not in [row[position] for row in table["rows"]]
+
+    # The review applied later keeps "0 counts as missing" for that column.
+    client.post(f"/datasets/{dataset_id}/review", json={"use_suggestions": True})
+    table = client.get(f"/datasets/{dataset_id}/preview", params={"rows": 50}).json()["tables"][0]
+    assert 0 not in [row[position] for row in table["rows"]]
+
+
+def test_first_and_last_rows_as_two_tables(client, monkeypatch):
+    dataset_id = upload(client).json()["dataset_id"]
+    monkeypatch.setattr(pipeline, "generate_sql_from_messages",
+                        lambda *args: (_ for _ in ()).throw(AssertionError("no model call")))
+
+    answer = client.post(f"/datasets/{dataset_id}/ask",
+                         json={"question": "first 5 rows and last 5 rows",
+                               "include_figures": False}).json()
+
+    assert answer["status"] == "answered" and answer["result"]["row_count"] == 10
+    titles = [section["title"] for section in answer["chart"]["sections"]]
+    assert titles == ["First 5 rows (1–5)", "Last 5 rows (28–32)"]
+    ids = [row[answer["result"]["columns"].index("order_id")] for row in answer["result"]["rows"]]
+    assert ids[0] == "00101" and len(set(ids)) == 10

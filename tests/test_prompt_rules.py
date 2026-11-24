@@ -26,7 +26,7 @@ SALES_COLUMNS = ["order_id", "order_date", "region", "units_sold", "total_sales"
 
 def test_prompt_has_the_new_rules():
     assert "SUM(<number>)" in SYSTEM_PROMPT
-    assert "IS NULL, never = 0 and never COUNT(<column>) = 0" in SYSTEM_PROMPT
+    assert "IS NULL (never = 0)" in SYSTEM_PROMPT
     assert "COUNT(*) ... WHERE <column> IS NULL" in SYSTEM_PROMPT
     assert '"Which rows/orders/records ..."' in SYSTEM_PROMPT
     assert '"by <X>" or "per <X>" needs GROUP BY <X>' in SYSTEM_PROMPT
@@ -101,9 +101,9 @@ def test_ask_in_chat_passes_the_column_names(monkeypatch, sales):
 # ---- dev questions (tuning set; eval/ stays held out) -------------
 
 NEW_DEV_QUESTIONS = {
-    "bar plot of units_sold by region": [("North", 107), ("South", 21), ("West", 36)],
-    "Which rows have no units sold?": [("00104",), ("00109",), ("00113",)],
-    "How many orders are missing units sold, by region": [("North", 3)],
+    "bar plot of units_sold by region": [("North", 119), ("South", 21), ("West", 36)],
+    "Which rows have no units sold?": [("00104",), ("00109",)],                  # 00113 had "twelve" units,
+    "How many orders are missing units sold, by region": [("North", 2)],
 }
 
 

@@ -64,6 +64,10 @@ def caveat_text(flag):
     return None
 
 
+CHOICE_ACTIONS = {"missing_filled", "missing_rows_dropped", "outliers_set_null",
+                  "outlier_rows_dropped"}
+
+
 def build_caveats(sql, profile, truncated=False):
     """Warnings for the columns this query uses."""
 
@@ -74,10 +78,25 @@ def build_caveats(sql, profile, truncated=False):
             continue
 
         for flag in table["flags"]:
+            if flag.get("resolved"):
+                continue
+
             if flag["column"] and re.search(rf"\b{re.escape(flag['column'])}\b", sql):
                 text = caveat_text(flag)
 
                 if text and text not in caveats:
+                    caveats.append(text)
+
+        # Values the review changed: an answer about them should say so
+        # ("no units recorded: 0" after missing units were filled).
+        for action in table.get("cleaning", {}).get("actions", []):
+            if (action["action"] in CHOICE_ACTIONS and action["column"]
+                    and re.search(rf"\b{re.escape(action['column'])}\b", sql)):
+                text = (f"{readable(action['column']).capitalize()}: "
+                        f"{action['detail'].replace(' (your choice)', '')} "
+                        "(a cleaning choice; the original values are in the raw table).")
+
+                if text not in caveats:
                     caveats.append(text)
 
     if truncated:
@@ -149,7 +168,12 @@ Write one to three short sentences that directly answer the question.
 - Use only numbers that appear in the result table, copied exactly as written there (keep the commas where they are).
 - Do not abbreviate (no "k" or "million"), add up, subtract or otherwise calculate new numbers.
 - Do not add currency symbols or units ($, Rs, kg); the data does not say which apply.
-- Do not guess causes or mention SQL, tables or columns by their technical names."""
+- Do not guess causes or mention SQL, tables or columns by their technical names.
+- When the result has many rows, do not go through them one by one: give the overall picture and name at most three examples."""
+
+# A summary longer than this is sent back to be shortened.
+SUMMARY_MAX_CHARS = 450
+SUMMARY_MAX_SENTENCES = 4
 
 
 # Added only when the result shows a '(blank)' cell: as a standing rule
@@ -217,7 +241,35 @@ def drop_invented_currency(summary, frame):
     return summary
 
 
-def summary_problem(summary, frame):
+MONTH_AND_DAY_NAMES = {
+    "january", "february", "march", "april", "may", "june", "july", "august",
+    "september", "october", "november", "december", "monday", "tuesday",
+    "wednesday", "thursday", "friday", "saturday", "sunday",
+}
+
+
+def invented_names(summary, frame, question=""):
+    """
+    Names in the summary that appear nowhere in the result or the question
+    ("Germany and Canada (misspelled as New Zeland)" when no Canada exists).
+    A name is a capitalised word that does not start a sentence.
+    """
+
+    known = (result_as_text(frame) + " " + question).lower()
+    names = []
+
+    for sentence in re.split(r"(?<=[.!?])\s+", summary):
+        words = re.findall(r"[A-Za-z][\w'-]*", sentence)
+
+        for word in words[1:]:                       # the first word is just capitalised
+            if (word[0].isupper() and word.lower() not in known
+                    and word.lower() not in MONTH_AND_DAY_NAMES and word != "I"):
+                names.append(word)
+
+    return names
+
+
+def summary_problem(summary, frame, question=""):
     """
     What is wrong with a summary the number check cannot catch, as a
     correction for the model; None when it reads as a description.
@@ -226,6 +278,19 @@ def summary_problem(summary, frame):
     # '2.06 | cut | color ...': the result table copied back.
     if "|" in summary or summary.count("\n") >= 3:
         return "Do not copy the table. Describe the result in one to three plain sentences."
+
+    invented = invented_names(summary, frame, question)
+
+    if invented:
+        return (f"These names are not in the result: {invented}. Use only names that "
+                "appear in the result table.")
+
+    # One sentence per row of a long result ("In 1972 ... In 1999 ...").
+    sentences = len(re.findall(r"[.!?](\s|$)", summary))
+
+    if len(summary) > SUMMARY_MAX_CHARS or sentences > SUMMARY_MAX_SENTENCES:
+        return ("Too long. Use at most three short sentences: the overall picture "
+                "and at most three examples, not every row.")
 
     if not frame.empty and re.search(r"\bno (data|rows?|results?)\b", summary, re.IGNORECASE):
         return (f"The result has {len(frame)} rows, so data did match. A '(blank)' "
@@ -251,6 +316,14 @@ def template_summary(frame, spec):
     if spec["type"] == "stat":
         return f"{readable(spec['y'])}: {format_number(frame[spec['y']].iloc[0])}."
 
+    # One row ("The Shawshank Redemption"): say it, not "the result has 1 rows".
+    if len(frame) == 1:
+        row = frame.iloc[0]
+        parts = [display_value(row[column]) if len(frame.columns) == 1
+                 else f"{readable(column)}: {display_value(row[column])}"
+                 for column in frame.columns]
+        return "; ".join(parts) + "."
+
     if spec["type"] == "bar":
         ranked = frame.sort_values(spec["x"], ascending=False)
         top = ranked.iloc[0]
@@ -259,12 +332,14 @@ def template_summary(frame, spec):
 
         if len(ranked) > 1:
             low = ranked.iloc[-1]
-            text += (f" and {low[spec['y']]} the lowest "
+            text += (f"; {low[spec['y']]} has the lowest of these {len(frame)} "
                      f"({format_number(low[spec['x']])})")
 
-        return f"{text}, across {len(frame)} groups."
+        return f"{text}."
 
-    return f"The result has {len(frame)} rows; see the table and chart."
+    shown = "table" if spec["type"] in ("table", "none") else "table and chart"
+
+    return f"The result has {len(frame)} rows; see the {shown}."
 
 
 def summarize(settings, question, sql, frame, spec):
@@ -300,7 +375,7 @@ def summarize(settings, question, sql, frame, spec):
 
         summary = drop_invented_currency(answer["summary"].strip(), frame)
 
-        problem = summary_problem(summary, frame)
+        problem = summary_problem(summary, frame, question)
 
         if problem:
             messages += [{"role": "assistant", "content": json.dumps(answer)},

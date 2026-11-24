@@ -15,6 +15,7 @@
 # ============================================================
 
 import json
+import re
 import logging
 
 from config import PROMPT_CHARS_PER_TOKEN
@@ -44,10 +45,18 @@ Rules:
 8. For "top N", "most" or "highest" use ORDER BY ... DESC LIMIT N (LIMIT 1 for a single winner).
 9. Use ROUND(value, 2) for averages and ratios.
 10. If the question needs a value that no column holds (for example cost, profit, margin, rating, age), set can_answer to false, say which column is missing in plan, and leave sql empty. Never invent a formula from other columns to stand in for it.
-11. "<number column> by <category>" or "plot/show <number> by <category>" means SUM(<number>) grouped by the category, unless the question says count, number of, how many or average.
-12. "missing", "no value", "blank", "empty", "not recorded" or "no <column>" mean <column> IS NULL, never = 0 and never COUNT(<column>) = 0 (COUNT skips NULLs). Count missing values with COUNT(*) ... WHERE <column> IS NULL.
+11. "<number> by <category>" (also "plot/show ...") means SUM(<number>) per category, unless it asks for a number of rows ("how many orders") or an average. "<text column> by <category>" ("performance by department") counts each value per category: GROUP BY both, COUNT(*).
+12. "missing", "blank", "empty", "not recorded" or "no <column>" mean <column> IS NULL (never = 0); count them with COUNT(*) ... WHERE <column> IS NULL.
 13. "Which rows/orders/records ..." asks for the rows themselves: SELECT the key column(s) plus the asked column, with no GROUP BY.
 14. Keep every grouping the question asks for: "by <X>" or "per <X>" needs GROUP BY <X>.
+15. "How many <items> were sold / bought / ordered", "most sold" or "units sold" ask for a quantity: SUM(<quantity column>). COUNT(*) only counts rows (orders).
+16. "Rank", "sort", "order" or "list <groups> by <measure>" returns every group, sorted, with no LIMIT.
+17. "Which <group> has the highest / lowest <measure>" compares the groups: SUM(<measure>) per group (AVG when the question says average), never MIN or MAX of single rows.
+18. "Average <measure> per order / per movie / per row" is AVG(<measure>) over all rows, with no GROUP BY. Add GROUP BY only for "by", "per <group>", "for each" or "in each".
+19. "Has / had <column>": for a number column ("had a discount") <column> > 0; for a text column ("have notes") <column> IS NOT NULL.
+20. A name, title or other text that is not listed exactly among a column's values (a surname, part of a title) is matched with LIKE '%text%'.
+21. "Compare A and B" or "A vs B" returns only A and B: filter with <column> IN ('A', 'B').
+22. "What / which is the longest / biggest / cheapest <thing>" asks for the thing: SELECT its name and the value, ORDER BY the value, LIMIT 1 (not MAX() alone).
 
 Fill "plan" first: one or two sentences naming the table, columns, filters and grouping you will use."""
 
@@ -74,6 +83,12 @@ EXAMPLE_SCHEMA = """TABLE orders (500 rows)
 
 
 FEW_SHOT_EXAMPLES = [
+    ("How many games were sold?",
+     {"plan": "Sold asks for a quantity: sum quantity of orders where category is 'Games' "
+              "(COUNT would give the number of orders, not items).",
+      "can_answer": True,
+      "sql": "SELECT SUM(quantity) AS games_sold FROM orders WHERE category = 'Games'"}),
+
     ("How many orders came from the East store?",
      {"plan": "Count rows of orders where store is 'East'.",
       "can_answer": True,
@@ -141,13 +156,74 @@ FEW_SHOT_EXAMPLES = [
 # 2. MESSAGES
 # ============================================================
 
+# "the most released genre for every year", "top 3 products in each
+# region", "best-selling item per month": the top value WITHIN each
+# group. Small models answer these with a plain GROUP BY (every pair)
+# or a subquery over the whole table (no rows), so they get a worked
+# pattern. "Which region has the most sales" (no per / each / every)
+# is a plain ranking and is not matched.
+SUPERLATIVE = re.compile(
+    r"\b(most|top|highest|largest|biggest|best|greatest|maximum|max|least|lowest|"
+    r"fewest|smallest|worst|minimum|min|popular|common|frequent|leading|dominant)\b",
+    re.IGNORECASE)
+WITHIN_GROUP = re.compile(r"\b(per|each|every|within)\b", re.IGNORECASE)
+SORT_ORDER = re.compile(
+    r"\b(highest|lowest|largest|smallest|most|least|biggest|top)\s+"
+    r"(first|last|to\s+\w+)\b", re.IGNORECASE)
+TOP_COUNT = re.compile(r"\btop\s+(\d{1,2})\b", re.IGNORECASE)
+LOWEST = re.compile(r"\b(least|lowest|fewest|smallest|worst|minimum|min)\b", re.IGNORECASE)
+
+
+def top_per_group(question):
+    """
+    {"count": n, "order": "DESC" | "ASC"} when the question asks for the
+    top value within each group, else None.
+    """
+
+    # "highest first", "lowest to highest": a sort order, not a top value.
+    question = SORT_ORDER.sub(" ", question)
+
+    if not (SUPERLATIVE.search(question) and WITHIN_GROUP.search(question)):
+        return None
+
+    count = TOP_COUNT.search(question)
+
+    return {"count": int(count.group(1)) if count else 1,
+            "order": "ASC" if LOWEST.search(question) else "DESC"}
+
+
+def top_per_group_hint(shape):
+    """
+    What the model is asked for under such a question: only one row per
+    (group, item) with its number. The app keeps the top one(s) in each
+    group itself (pipeline.keep_top_per_group), because small models
+    write the ranking query unreliably.
+    """
+
+    return ("Note: this asks for the top value within each group. Do not rank, do "
+            "not use LIMIT: return one row per group and item with its number, "
+            "group first, number last, like:\n"
+            "SELECT <group expression> AS grp, <item column> AS item, COUNT(*) AS n "
+            "FROM <tables> GROUP BY 1, 2\n"
+            "<group expression> is the column the question groups by (e.g. country). "
+            "Only when the question names a period use per year strftime('%Y', <date>), "
+            "per month strftime('%Y-%m', <date>) or per decade "
+            "(CAST(strftime('%Y', <date>) AS INTEGER) / 10) * 10. "
+            "Use SUM(<amount>) or AVG(<amount>) instead of COUNT(*) when the question "
+            "is about an amount; MAX(<value>) for the highest single value. The app "
+            "keeps the top item of each group.")
+
+
 def user_message(schema_text, question, context=None):
     """Schema, optional conversation context, then the question."""
 
-    if context:
-        return f"Schema:\n{schema_text}\n\n{context}\n\nQuestion: {question}"
+    shape = top_per_group(question)
+    note = f"\n{top_per_group_hint(shape)}" if shape else ""
 
-    return f"Schema:\n{schema_text}\n\nQuestion: {question}"
+    if context:
+        return f"Schema:\n{schema_text}\n\n{context}\n\nQuestion: {question}{note}"
+
+    return f"Schema:\n{schema_text}\n\nQuestion: {question}{note}"
 
 
 SAME_EXAMPLE_SCHEMA = "(the orders table shown above)"
@@ -196,7 +272,8 @@ def clean_sql(sql):
         sql = sql.strip("`")
         sql = sql[3:] if sql.lower().startswith("sql") else sql
 
-    return sql.strip().rstrip(";").strip()
+    # A stray brace or fence left over from the JSON answer ("...'%Drama%'}").
+    return sql.strip().strip("`").lstrip("{").rstrip("};").strip()
 
 
 def generate_sql_from_messages(settings, messages):

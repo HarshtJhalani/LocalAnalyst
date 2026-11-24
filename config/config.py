@@ -94,6 +94,7 @@ def get_dataset_paths(dataset_id, datasets_dir=None):
         chats.db                chats and turns
         logs/traces.jsonl       one line per answered question
         status.json             ingestion stage and counts
+        cleaning_choices.json   the user's choices from the review step
     """
 
     dataset_id = validate_dataset_id(dataset_id)
@@ -105,6 +106,7 @@ def get_dataset_paths(dataset_id, datasets_dir=None):
         "input_dir": root / "input",
         "database": root / "dataset.db",
         "cleaning_report": root / "cleaning_report.json",
+        "cleaning_choices": root / "cleaning_choices.json",
         "profile": root / "profile.json",
         "schema": root / "schema.txt",
         "chats": root / "chats.db",
@@ -133,6 +135,10 @@ def create_dataset_directories(paths):
 
 # Inside Docker: http://host.docker.internal:11434
 OLLAMA_URL = os.getenv("OLLAMA_URL", "http://localhost:11434")
+
+# The API's port. Not 8000: Windows (Hyper-V / WSL / Docker) often reserves
+# a range around it (WinError 10013). Change it in .env if this one is taken.
+API_PORT = int(os.getenv("API_PORT", "8765"))
 
 # auto: detect; gpu / cpu: force a profile.
 MODEL_PROFILE = os.getenv("MODEL_PROFILE", "auto").strip().lower()
@@ -295,7 +301,7 @@ PROGRESS_CHECK_STEPS = 10_000     # SQLite VM steps between time checks
 # ============================================================
 
 MAX_BARS = 25
-MAX_SERIES = 8
+MAX_SERIES = 6               # colours in the chart palette
 MAX_SMALL_MULTIPLES = 3
 MIN_SCATTER_ROWS = 5
 MIN_HISTOGRAM_ROWS = 10

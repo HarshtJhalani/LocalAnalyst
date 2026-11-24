@@ -23,7 +23,15 @@ import plotly.io as pio
 import streamlit as st
 
 
-API_URL = os.getenv("API_URL", "http://127.0.0.1:8000").rstrip("/")
+import sys
+from pathlib import Path
+
+# Streamlit runs this file from src/ui/: make the project's config importable.
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+
+from config import API_PORT          # noqa: E402  (also loads .env)
+
+API_URL = os.getenv("API_URL", f"http://127.0.0.1:{API_PORT}").rstrip("/")
 REQUEST_TIMEOUT = 600           # the API's 240 s question budget + one 300 s CPU model call + margin
 CHAT_LIST_HEIGHT = 360         # px; longer chat lists scroll inside the sidebar
 
@@ -82,6 +90,54 @@ def cached_health():
 @st.cache_data(ttl=120, show_spinner=False)
 def cached_details(dataset_id):
     return api("GET", f"/datasets/{dataset_id}")
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def cached_preview(dataset_id):
+    return api("GET", f"/datasets/{dataset_id}/preview")
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def cached_review(dataset_id):
+    return api("GET", f"/datasets/{dataset_id}/review")
+
+
+def clear_dataset_caches():
+    """After the data was cleaned again, every cached view of it is stale."""
+
+    for cached in (cached_details, cached_preview, cached_review):
+        cached.clear()
+
+    # Downloaded cleaned tables are stale too.
+    for key in [key for key in st.session_state.downloads if key[0] == "table"]:
+        del st.session_state.downloads[key]
+
+
+def table_downloads(dataset_id, table_name):
+    """CSV and Excel of a whole cleaned table, fetched when asked for."""
+
+    formats = (("csv", "⬇ Cleaned CSV"), ("xlsx", "⬇ Cleaned Excel"))
+    keys = [("table", dataset_id, table_name, file_format) for file_format, _ in formats]
+
+    if not all(key in st.session_state.downloads for key in keys):
+        if st.button("Download the cleaned data (CSV / Excel)",
+                     key=f"prep-table-{dataset_id}-{table_name}"):
+            with st.spinner("Preparing files ..."):
+                for (file_format, _), key in zip(formats, keys):
+                    ok, data, _ = api("GET", f"/datasets/{dataset_id}/tables/"
+                                             f"{table_name}/download",
+                                      params={"format": file_format})
+                    st.session_state.downloads[key] = data if ok else None
+            st.rerun()
+        return
+
+    for column, (file_format, label), key in zip(st.columns(2), formats, keys):
+        data = st.session_state.downloads[key]
+
+        if data:
+            column.download_button(label, data, width="stretch",
+                                   file_name=f"{table_name}_cleaned.{file_format}",
+                                   key=f"dl-table-{dataset_id}-{table_name}-{file_format}")
 
 
 def short_date(timestamp):
@@ -161,7 +217,7 @@ def sidebar_upload():
             select_dataset(data["dataset_id"])
             tables = ", ".join(f"{t['table_name']} ({t['rows']} rows)" for t in data["tables"])
             notify("success", f"{data['file_name']} is ready: {tables}. "
-                              "See the Data tab for what was cleaned.")
+                              "Review the cleaning decisions below, then ask away.")
             st.rerun()
 
         st.sidebar.error(error)
@@ -400,6 +456,13 @@ def render_details(answer):
         elif isinstance(attempts, int) and attempts > 1:
             st.markdown(f"**Self-correction:** {attempts} attempts")
 
+        # The technical reason a failed answer gives only in plain words above.
+        if answer.get("status") == "failed":
+            error = answer.get("error") or (
+                attempts[-1].get("error") if isinstance(attempts, list) and attempts else None)
+            if error:
+                st.markdown(f"**Last error:** `{error}`")
+
         if answer.get("seconds") is not None:
             st.caption(f"{answer['seconds']} s")
 
@@ -417,9 +480,12 @@ STATUS_MESSAGES = {
     "failed": (st.error, "No working query could be produced."),
     "blocked": (st.warning, "The question was not sent."),
     "clarify": (st.info, "Please ask a question about the data."),
+    "confirm": (st.warning, "Confirm the change to the data."),
+    "cleaned": (st.success, "The data was cleaned again."),
 }
 
-NO_DETAILS = {"blocked", "clarify"}         # nothing was run: no "How this was answered"
+# nothing was run: no "How this was answered"
+NO_DETAILS = {"blocked", "clarify", "confirm", "cleaned"}
 
 
 def render_schema_answer(dataset_id, answer):
@@ -437,6 +503,12 @@ def render_schema_answer(dataset_id, answer):
                    "download for all of them.")
 
     download_buttons(dataset_id, answer["chat_id"], answer["position"])
+
+    suggestion_buttons(answer)
+
+
+def suggestion_buttons(answer):
+    """Clickable questions offered with an answer; a click asks it."""
 
     suggestions = answer.get("suggestions") or []
 
@@ -464,6 +536,7 @@ def render_answer(dataset_id, answer):
     if status in STATUS_MESSAGES:
         show, default = STATUS_MESSAGES[status]
         show(answer.get("message") or default)
+        suggestion_buttons(answer)
 
         if status not in NO_DETAILS:
             render_details(answer)
@@ -478,7 +551,19 @@ def render_answer(dataset_id, answer):
     result = answer["result"]
     shown = len(result["rows"])
 
-    if result["columns"]:
+    sections = (answer.get("chart") or {}).get("sections")
+
+    # "first 5 and last 5 rows": one table per part.
+    if sections and result["columns"]:
+        frame, start = result_frame(result), 0
+
+        for section in sections:
+            st.markdown(f"**{section['title']}**")
+            st.dataframe(frame.iloc[start:start + section["rows"]], hide_index=True,
+                         width="stretch")
+            start += section["rows"]
+
+    elif result["columns"]:
         with st.expander(f"Table · {result['row_count']} row(s)", expanded=figure is None):
             st.dataframe(result_frame(result), hide_index=True, width="stretch")
 
@@ -505,6 +590,8 @@ def render_chat(dataset_id, chat_id):
         st.warning(error)
         return False
 
+    data_overview(dataset_id)
+
     for turn in chat["turns"]:
         with st.chat_message("user"):
             st.markdown(turn["question"])
@@ -519,17 +606,181 @@ def render_chat(dataset_id, chat_id):
     return True
 
 
-def render_intro():
+def preview_tables(data):
+    """First rows and description of every table."""
+
+    for table in data["tables"]:
+        st.markdown(f"**{table['table_name']}**: first {len(table['rows'])} rows")
+        st.dataframe(pd.DataFrame(table["rows"], columns=table["columns"]),
+                     hide_index=True, width="stretch")
+        st.markdown(table["description"])
+
+
+def starter_buttons(questions, place):
+    """Clickable question ideas; a click asks the question."""
+
+    if not questions:
+        return
+
+    for column, question in zip(st.columns(len(questions)), questions):
+        if column.button(question, width="stretch", key=f"starter|{place}|{question}"):
+            st.session_state.pending_question = question
+            st.rerun()
+
+
+def preview_suggestions(data):
+    return data.get("suggestions") or [
+        q for table in data["tables"] for q in table["suggestions"]][:3]
+
+
+def render_preview(dataset_id):
+    """
+    The first look in a new chat: rows, description. Returns the starter
+    questions, or [] when the preview is unavailable.
+    """
+
+    ok, data, _ = cached_preview(dataset_id)
+
+    if not ok:
+        return []
+
+    with st.chat_message("assistant"):
+        preview_tables(data)
+
+    return preview_suggestions(data)
+
+
+def data_overview(dataset_id):
+    """The same first look at the top of a running chat, folded away."""
+
+    ok, data, _ = cached_preview(dataset_id)
+
+    if not ok:
+        return
+
+    with st.expander("About this data: first rows, description and question ideas"):
+        preview_tables(data)
+        st.markdown("**Question ideas**")
+        starter_buttons(preview_suggestions(data), "chat")
+
+
+def option_index(item):
+    """Radio position of the option chosen last time, else the suggestion."""
+
+    values = [option["value"] for option in item["options"]]
+    chosen = item.get("chosen")
+    current = "merge" if isinstance(chosen, dict) else chosen
+
+    return values.index(current if current in values else item["suggested"])
+
+
+def review_choice(item, key):
+    """Widgets for one review item; returns the option (or a spelling map)."""
+
+    labels = {option["value"]: option["label"] for option in item["options"]}
+    suggested = item["suggested"]
+
+    st.markdown(f"**{item['title']}** · `{item['column']}`"
+                + (f" · table `{item['table']}`" if item["table"] else ""))
+    st.caption(item["detail"])
+
+    if item.get("guesses"):
+        st.dataframe(pd.DataFrame(item["guesses"], columns=["as typed", "read as"]),
+                     hide_index=True, height=min(35 * len(item["guesses"]) + 38, 220))
+
+    value = st.radio(
+        "Choice", list(labels), index=option_index(item), key=key, horizontal=True,
+        label_visibility="collapsed",
+        format_func=lambda v: labels[v] + ("  (suggested)" if v == suggested else ""))
+    st.caption(f"Why suggested: {item['reason']}")
+
+    # Look-alike values: pick the spelling each one becomes.
+    if value == "merge" and item.get("groups"):
+        previous = item["chosen"] if isinstance(item.get("chosen"), dict) else {}
+        targets = sorted(set(item["groups"]) | set(item["groups"].values()))
+        mapping = {}
+
+        for variant, target in item["groups"].items():
+            current = previous.get(variant, target)
+            mapping[variant] = st.selectbox(
+                f"{variant!r} becomes", targets, key=f"{key}|{variant}",
+                index=targets.index(current) if current in targets else 0)
+
+        return mapping
+
+    return value
+
+
+def render_review(dataset_id, items, key_prefix="review"):
+    """The review form; applies, applies the suggestions, or skips."""
+
+    choices = {}
+
+    with st.form(f"{key_prefix}_{dataset_id}"):
+        for number, item in enumerate(items):
+            with st.container(border=True):
+                value = review_choice(item, f"{key_prefix}|{dataset_id}|{item['id']}")
+                choices.setdefault(item["table"], {}).setdefault(
+                    item["column"], {})[item["issue"]] = value
+
+        left, right = st.columns(2)
+        apply = left.form_submit_button("Apply and continue", type="primary",
+                                        width="stretch")
+        skip = right.form_submit_button("Skip: keep the automatic cleaning",
+                                        width="stretch")
+
+    if not (apply or skip):
+        return
+
+    body = {"skip": True} if skip else {"choices": choices}
+
+    with st.spinner("Cleaning the file again with your choices ..."):
+        ok, _, error = api("POST", f"/datasets/{dataset_id}/review", json=body)
+
+    if ok:
+        clear_dataset_caches()
+        notify("success", "Kept the automatic cleaning." if skip else
+               "Applied your choices; the data below reflects them.")
+        st.rerun()
+
+    st.error(error)
+
+
+def review_step(dataset_id):
+    """
+    Before the first question of a dataset that was never reviewed: the
+    decisions the cleaning left open. Returns True while it is shown.
+    """
+
+    ok, data, _ = cached_review(dataset_id)
+
+    if not ok or data["review_state"] != "pending" or not data["items"]:
+        return False
+
+    with st.chat_message("assistant"):
+        st.markdown("#### Before you ask: a few cleaning decisions")
+        st.markdown(
+            f"The file was cleaned automatically (names, types, spaces, duplicates, "
+            f"date formats). **{len(data['items'])} things need your call**; each "
+            f"has a suggested option already selected. The original values are "
+            f"always kept in the `_raw` tables.")
+        render_review(dataset_id, data["items"])
+
+    return True
+
+
+def render_intro(dataset_id):
+    if review_step(dataset_id):
+        return
+
+    suggestions = render_preview(dataset_id)
+
     st.markdown("#### Ask a question about your data")
     st.caption("Plain English works: totals, averages, rankings, trends over time, "
-               "filters. Follow-up questions can build on earlier answers.")
+               "filters, and charts (bar, line, pie ...). Follow-up questions can "
+               "build on earlier answers.")
 
-    example_columns = st.columns(len(EXAMPLE_QUESTIONS))
-
-    for column, example in zip(example_columns, EXAMPLE_QUESTIONS):
-        if column.button(example, width="stretch"):
-            st.session_state.pending_question = example
-            st.rerun()
+    starter_buttons(suggestions or EXAMPLE_QUESTIONS, "intro")
 
 
 def ask_tab(dataset_id):
@@ -545,7 +796,7 @@ def ask_tab(dataset_id):
     with conversation:
         # Step 1: redraw the chat, or the intro for a new one.
         if chat_id is None:
-            render_intro()
+            render_intro(dataset_id)
         elif not render_chat(dataset_id, chat_id):
             return
 
@@ -567,6 +818,10 @@ def ask_tab(dataset_id):
             st.rerun()
 
         if ok:
+            # A cleaning change from the chat: every cached view of the data is stale.
+            if data["status"] == "cleaned":
+                clear_dataset_caches()
+
             st.session_state.chat_id = data["chat_id"]
             st.session_state.answers[(data["chat_id"], data["position"])] = data
             st.rerun()
@@ -600,30 +855,38 @@ def data_tab(dataset_id):
         table = details["profile"]["tables"][report["table_name"]]
 
         with st.container(border=True):
-            flag_count = len(report["flags"])
-            badge = (f":orange-badge[⚠ {flag_count} to review]" if flag_count
-                     else ":green-badge[✓ nothing flagged]")
+            # Flags the user's review choices dealt with are no longer open.
+            done = lambda flag: flag.get("resolved") or flag.get("decided")
+            open_flags = [flag for flag in report["flags"] if not done(flag)]
+            decided = [flag for flag in report["flags"] if done(flag)]
+            badge = (f":orange-badge[⚠ {len(open_flags)} still flagged]" if open_flags
+                     else ":green-badge[✓ nothing left to review]")
             st.markdown(f"**Table `{report['table_name']}`** &nbsp; {badge}")
             metrics = st.columns(3)
             metrics[0].metric("Rows after cleaning", report["rows_after"],
                               delta=report["rows_after"] - report["rows_before"],
                               delta_color="off")
             metrics[1].metric("Columns", report["columns_after"])
-            metrics[2].metric("Flags to review", len(report["flags"]))
+            metrics[2].metric("Still flagged", len(open_flags))
 
             left, right = st.columns(2)
 
             with left:
-                st.markdown("**Cleaned automatically**")
+                st.markdown("**Cleaned** (automatically, or by your choice)")
                 for action in report["actions"]:
                     prefix = f"`{action['column']}` " if action["column"] else ""
                     st.markdown(f"- {prefix}{action['detail']}")
 
             with right:
-                st.markdown("**Flagged, left unchanged**")
-                for flag in report["flags"] or [{"column": None, "detail": "Nothing flagged."}]:
+                st.markdown("**Still flagged**")
+                for flag in open_flags or [{"column": None, "detail": "Nothing left to review."}]:
                     prefix = f"`{flag['column']}` " if flag["column"] else ""
                     st.markdown(f"- {prefix}{flag['detail']}")
+
+                if decided:
+                    st.caption("Decided by you: " + ", ".join(
+                        f"{flag['column']} ({flag['issue'].replace('_', ' ')})"
+                        for flag in decided) + ". See the list on the left.")
 
             columns = pd.DataFrame([
                 {"column": name, "type": column["kind"], "missing": column["missing"],
@@ -634,6 +897,15 @@ def data_tab(dataset_id):
                 for name, column in table["columns"].items()
             ])
             st.dataframe(columns, hide_index=True, width="stretch")
+            table_downloads(dataset_id, report["table_name"])
+
+    ok, review, _ = cached_review(dataset_id)
+
+    if ok and review["items"]:
+        with st.expander(f"Change cleaning decisions ({len(review['items'])})"):
+            st.caption("Cleans the original file again with these choices. "
+                       "Answers already in chats are not re-run.")
+            render_review(dataset_id, review["items"], key_prefix="data_review")
 
     with st.expander("Schema the model sees"):
         st.code(details["schema_text"], language="text")

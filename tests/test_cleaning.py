@@ -51,7 +51,7 @@ def test_sales_rows_and_types(sales_result):
     assert report["rows_before"] == 35 and len(frame) == 32
     assert types["order_id"] == "text"
     assert types["order_date"] == "date"
-    assert types["units_sold"] == "integer" and frame["units_sold"].isna().sum() == 3
+    assert types["units_sold"] == "integer" and frame["units_sold"].isna().sum() == 2         # "twelve" is read as 12
     assert types["paid"] == "boolean"
     assert report["column_units"] == {"unit_price": "currency", "discount_pct": "percent",
                                       "total_sales": "currency"}

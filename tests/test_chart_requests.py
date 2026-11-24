@@ -54,12 +54,20 @@ def test_pie_and_donut_drawn_when_asked():
 
 
 def test_pie_falls_back_when_it_would_mislead():
-    many = pd.DataFrame({"name": list("ABCDEFGH"), "value": range(1, 9)})
     negative = REPS.assign(total_units_sold=[49, -5, 61])
+    spec = choose_chart(negative, "pie chart of value by name")
 
-    for frame in (many, negative):
-        spec = choose_chart(frame, "pie chart of value by name")
-        assert spec["type"] == "bar" and "pie chart" in spec["note"]
+    assert spec["type"] == "bar" and "pie chart" in spec["note"]
+
+
+def test_pie_with_many_parts_groups_the_rest_as_other():
+    many = pd.DataFrame({"name": list("ABCDEFGH"), "value": range(8, 0, -1)})
+    spec = choose_chart(many, "pie chart of value by name")
+
+    assert spec["type"] == "pie" and spec["other_after"] == 5 and "Other" in spec["note"]
+    pie = build_figure(many, spec, "light").data[0]
+    assert list(pie.labels) == ["A", "B", "C", "D", "E", "Other"]
+    assert list(pie.values)[-1] == 3 + 2 + 1 and sum(pie.values) == sum(range(1, 9))
 
 
 def test_other_requested_types():
@@ -76,3 +84,17 @@ def test_other_requested_types():
                         (choose_chart(MONTHS, "area chart"), MONTHS),
                         (choose_chart(TWO_GROUPS, "stacked chart"), TWO_GROUPS)):
         assert build_figure(frame, spec, "dark").data
+
+
+
+def test_bar_asked_with_whole_numbers_as_labels():
+    frame = pd.DataFrame({"age": [None, 25.0, 30, 35, 40, 50],
+                          "avg_salary": [59000, 60479.45, 60436.24, 60150, 60280, 60530.3]})
+    spec = choose_chart(frame, "average salary vs age bar plot")
+
+    assert spec["type"] == "bar" and spec["y"] == "age" and spec["x"] == "avg_salary"
+    labels = list(build_figure(frame, spec, "light").data[0].y)
+    assert "25" in labels and "(blank)" in labels and "25.0" not in labels
+
+    # Without a bar request, two number columns stay a scatter.
+    assert choose_chart(frame, "average salary vs age")["type"] == "scatter"

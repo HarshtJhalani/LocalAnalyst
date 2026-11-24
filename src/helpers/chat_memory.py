@@ -289,6 +289,19 @@ def recent_history(db_path, chat_id, limit=MEMORY_TURNS):
     return answered[-limit:]
 
 
+def chart_text(turn):
+    """What the chart showed beyond the rows: the names grouped as "Other"."""
+
+    chart = turn.get("chart") or {}
+    grouped = chart.get("other_labels")
+
+    if not grouped:
+        return ""
+
+    return (f"\nChart: {chart['type']} of {chart['y']} by {chart['x']}; the slice "
+            f"\"Other\" groups these {chart['x']} values: {', '.join(grouped)}")
+
+
 def history_text(history):
     """Earlier turns as plain text for the prompts."""
 
@@ -302,26 +315,31 @@ def history_text(history):
                 if turn["row_count"] > HISTORY_PREVIEW_ROWS else "")
         blocks.append(f"Turn {number}\nQuestion: "
                       f"{turn['standalone_question'] or turn['question']}\n"
-                      f"SQL: {turn['sql']}\nResult:\n{rows}{more}")
+                      f"SQL: {turn['sql']}\nResult:\n{rows}{more}{chart_text(turn)}")
 
     return "\n\n".join(blocks)
 
 
-SELF_CONTAINED_MIN_WORDS = 6        # "longer than about five words"
+# Words that mark a message as building on the previous answer ("only for
+# Laptop", "now as a pie", "what about the West", "same for 2023", "which of
+# them ..."). Without one, a question that names a column starts fresh.
+FOLLOW_UP_WORDS = {
+    "only", "now", "instead", "also", "too", "same", "again", "those", "these", "that",
+    "them", "it", "its", "their", "theirs", "this", "above", "previous", "earlier",
+    "except", "excluding", "without", "then", "else", "more", "less", "rest",
+    "remaining", "other", "others", "vs", "versus", "compared", "just", "anymore",
+}
+FOLLOW_UP_OPENINGS = re.compile(
+    r"^\s*(and|but|or|for|in|by|with|without|what about|how about|same|only|now|"
+    r"also|then|except|per|between|from|to|during|after|before|since|excluding)\b",
+    re.IGNORECASE)
 
 
-def is_self_contained(question, column_names):
-    """
-    A question that names one of the dataset's columns and is longer than
-    about five words already says what it is about. Rewriting it risked
-    swapping its subject ("which rows" -> "which regions") or dropping
-    its "by <X>", so it is used as typed.
-    """
+def names_a_column(question, column_names):
+    """The question names a column, or a clear part of one ("sales" for total_sales)."""
 
+    words = set(re.findall(r"[a-z0-9]+", question.casefold()))
     text = question.casefold()
-
-    if len(re.findall(r"\w+", text)) < SELF_CONTAINED_MIN_WORDS:
-        return False
 
     for name in column_names or []:
         name = name.casefold()
@@ -329,11 +347,32 @@ def is_self_contained(question, column_names):
         if len(name) < 3:
             continue                     # x, y, z: too likely to match by chance
 
-        for spelling in {name, name.replace("_", " ")}:
-            if re.search(rf"(?<!\w){re.escape(spelling)}(?!\w)", text):
-                return True
+        parts = {part for part in name.split("_") if len(part) > 3}
+
+        if (re.search(rf"(?<!\w){re.escape(name.replace('_', ' '))}(?!\w)", text)
+                or name in text or parts & words):
+            return True
 
     return False
+
+
+def is_follow_up(question):
+    """Wording that builds on the previous answer."""
+
+    words = set(re.findall(r"[a-z']+", question.casefold()))
+
+    return bool(FOLLOW_UP_OPENINGS.search(question) or words & FOLLOW_UP_WORDS)
+
+
+def is_self_contained(question, column_names):
+    """
+    A question that names what it is about (a column) and has no follow-up
+    wording starts fresh, however short ("Monthly sales trend" after "only
+    for Laptop" must not keep the Laptop filter). Rewriting it risked
+    swapping its subject or inheriting the last filter.
+    """
+
+    return not is_follow_up(question) and names_a_column(question, column_names)
 
 
 def rewrite_question(settings, history, question, column_names=None):
@@ -380,4 +419,5 @@ def sql_context(history):
     """The last query, offered to the SQL step for reuse."""
 
     return ("Earlier query in this conversation (reuse its filters, joins and "
-            f"grouping where the question builds on it):\n{history[-1]['sql']}")
+            f"grouping where the question builds on it):\n{history[-1]['sql']}"
+            f"{chart_text(history[-1])}")

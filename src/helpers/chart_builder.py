@@ -47,18 +47,21 @@ from config import (
 # ============================================================
 
 
+# Brand palette: #092328 (deep), #12544F (teal), #2A835F (green), #8BBB92 (sage).
+# The green leads every chart; a chart with several series continues with
+# hues far from it, checked for colour-blind separation and contrast on
+# each mode's surface (same hue order in both modes, so a series keeps its
+# colour). At most 6 series (MAX_SERIES).
 THEMES = {
     "light": {
-        "surface": "#fcfcfb", "ink": "#0b0b0b", "ink_secondary": "#52514e",
-        "muted": "#898781", "grid": "#e1e0d9", "axis": "#c3c2b7",
-        "series": ["#2a78d6", "#eb6834", "#1baf7a", "#eda100",
-                   "#e87ba4", "#008300", "#6250d6", "#e34948"],
+        "surface": "#fcfdfc", "ink": "#092328", "ink_secondary": "#12544F",
+        "muted": "#5b7470", "grid": "#e2ebe6", "axis": "#c3d3cb",
+        "series": ["#2A835F", "#6250d6", "#eb6834", "#2a78d6", "#eda100", "#e87ba4"],
     },
     "dark": {
-        "surface": "#1a1a19", "ink": "#f0efec", "ink_secondary": "#c3c2b7",
-        "muted": "#898781", "grid": "#2c2c2a", "axis": "#383835",
-        "series": ["#3987e5", "#d95926", "#199e70", "#c98500",
-                   "#d55181", "#008300", "#9085e9", "#e66767"],
+        "surface": "#092328", "ink": "#eef5f1", "ink_secondary": "#b9d3c4",
+        "muted": "#8BBB92", "grid": "#143639", "axis": "#22504a",
+        "series": ["#34A374", "#9085e9", "#d95926", "#3987e5", "#c98500", "#d55181"],
     },
 }
 
@@ -74,12 +77,19 @@ FONT_FAMILY = 'system-ui, -apple-system, "Segoe UI", sans-serif'
 TEMPORAL_VALUE = re.compile(r"^\d{4}(-\d{2}(-\d{2}( \d{2}:\d{2}(:\d{2})?)?)?)?$")
 
 
-TEMPORAL_NAME = re.compile(r"(date|month|year|week|day|quarter|period|time)",
+TEMPORAL_NAME = re.compile(r"(date|month|year|week|day|quarter|period|time|decade)",
                            re.IGNORECASE)
 
 
 def is_temporal(series):
     """ISO-like dates / months, or a year column named like one."""
+
+    # 1930.0, 1940.0 (a decade or year computed in SQL comes back as a float).
+    if pd.api.types.is_float_dtype(series):
+        numbers = series.dropna()
+        if (not numbers.empty and (numbers % 1 == 0).all()
+                and numbers.between(1000, 2999).all()):
+            series = numbers.astype(int).rename(series.name)
 
     values = series.dropna().astype(str)
 
@@ -185,13 +195,49 @@ def choose_chart(frame, question="", original_question=""):
     return apply_request(frame, roles, shaped, asked) if asked else shaped
 
 
+def number_labels(frame, numeric):
+    """
+    The first number column of whole numbers with few distinct values
+    (up to MAX_BARS), usable as bar labels; else None.
+    """
+
+    for column in numeric[:-1] or numeric:
+        values = frame[column].dropna()
+
+        if (not values.empty and (values % 1 == 0).all()
+                and values.nunique() == len(values) and len(values) <= MAX_BARS):
+            return column
+
+    return None
+
+
+def label_text(value):
+    """25.0 -> '25'; a missing label -> '(blank)'."""
+
+    if pd.isna(value):
+        return "(blank)"
+
+    return str(int(value)) if float(value).is_integer() else str(value)
+
+
 def apply_request(frame, roles, shaped, asked):
     """The requested type when the result fits it, else the shaped chart + a note."""
 
     temporal, numeric, category = roles["temporal"], roles["numeric"], roles["category"]
     rows = len(frame)
     labels = category or temporal               # what names each bar / slice / point
-    base = {**shaped, "color": None}
+
+    # "average salary vs age as a bar plot": no text column, but a column
+    # of a few whole numbers (age, rating, floor) can name the bars or slices,
+    # and the other number is the measure.
+    if not labels and asked in ("bar", "column", "pie", "donut") and len(numeric) >= 2:
+        label = number_labels(frame, numeric)
+        if label:
+            labels = [label]
+            numeric = [column for column in numeric if column != label]
+
+    base = {**shaped, "color": None,
+            "label_column": labels[0] if labels and labels[0] in roles["numeric"] else None}
 
     def fallback(reason):
         note = f"{reason} Shown as {shaped['type'].replace('_', ' ')} instead."
@@ -205,12 +251,22 @@ def apply_request(frame, roles, shaped, asked):
         if len(labels) != 1 or not numeric:
             return fallback("A pie chart needs one name column and one number column.")
         values = frame[numeric[0]]
-        if not 2 <= rows <= MAX_PIE_SLICES:
-            return fallback(f"A pie chart stays readable with 2-{MAX_PIE_SLICES} parts; "
-                            f"this result has {rows}.")
+        if rows < 2:
+            return fallback("A pie chart needs at least 2 parts.")
         if values.isna().any() or (values < 0).any() or values.sum() <= 0:
             return fallback("A pie chart needs positive values that add up to a whole.")
-        return {**base, "type": asked, "x": labels[0], "y": numeric[0]}
+        spec = {**base, "type": asked, "x": labels[0], "y": numeric[0]}
+        # Asked for by name with many parts: the largest ones plus "Other",
+        # since the parts still add up to the whole.
+        if rows > MAX_PIE_SLICES:
+            kept = MAX_PIE_SLICES - 1
+            ordered = frame.sort_values(numeric[0], ascending=False)
+            spec.update(other_after=kept,
+                        other_labels=ordered.iloc[kept:][labels[0]].astype(str).tolist(),
+                        note=f"The {kept} largest of {rows} parts are shown; the other "
+                             f"{rows - kept} are grouped as \"Other\". The table has all "
+                             "of them.")
+        return spec
 
     if asked in ("bar", "column"):
         if not (labels and numeric) or rows > MAX_BARS:
@@ -568,6 +624,14 @@ def draw_pie(frame, spec, theme):
     """
 
     data = frame.sort_values(spec["y"], ascending=False)
+    kept = spec.get("other_after")
+
+    if kept and len(data) > kept:
+        rest = data.iloc[kept:][spec["y"]].sum()
+        data = pd.concat([data.iloc[:kept][[spec["x"], spec["y"]]],
+                          pd.DataFrame({spec["x"]: ["Other"], spec["y"]: [rest]})],
+                         ignore_index=True)
+
     names = data[spec["x"]].astype(str)
     colors = series_colors(names, theme)
     donut = spec["type"] == "donut"
@@ -673,4 +737,10 @@ def build_figure(frame, spec, mode="light"):
     """Plotly figure for a spec, or None for table / none."""
 
     drawer = DRAWERS.get(spec["type"])
+
+    # Whole numbers used as labels (ages): '25', not 25.0 on a number axis.
+    label = spec.get("label_column")
+    if label and label in frame:
+        frame = frame.assign(**{label: frame[label].map(label_text)})
+
     return drawer(frame, spec, THEMES[mode]) if drawer else None

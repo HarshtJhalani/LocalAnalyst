@@ -1,0 +1,585 @@
+{
+ "about": "Question wordings small models tend to get wrong, grouped by kind of mistake. Each has the expected SQL on the cleaned table (review suggestions applied); a list holds every acceptable reading. Run with: python -m src.evaluation.run_stress",
+ "files": {
+  "sales": "data/input_data/messy_sales.csv",
+  "imdb": "data/input_data/eval/messy_IMDB_dataset.csv",
+  "employees": "data/input_data/messy_employees.xlsx",
+  "inventory": "data/input_data/eval/eval_inventory.csv",
+  "tickets": "data/input_data/eval/eval_tickets.xlsx",
+  "customers": "data/input_data/customers.json",
+  "products": "data/input_data/products.parquet"
+ },
+ "questions": [
+  {
+   "file": "sales",
+   "kind": "count vs sum",
+   "question": "How many monitors were sold?",
+   "expected": "SELECT SUM(units_sold) FROM messy_sales WHERE product = 'Monitor'"
+  },
+  {
+   "file": "sales",
+   "kind": "count vs sum",
+   "question": "How many laptops did we sell?",
+   "expected": "SELECT SUM(units_sold) FROM messy_sales WHERE product = 'Laptop'"
+  },
+  {
+   "file": "sales",
+   "kind": "count vs sum",
+   "question": "Total units sold",
+   "expected": "SELECT SUM(units_sold) FROM messy_sales"
+  },
+  {
+   "file": "sales",
+   "kind": "count vs sum",
+   "question": "Which product sold the most units?",
+   "expected": "SELECT product FROM messy_sales GROUP BY product ORDER BY SUM(units_sold) DESC LIMIT 1"
+  },
+  {
+   "file": "sales",
+   "kind": "count vs sum",
+   "question": "How many orders were placed?",
+   "expected": "SELECT COUNT(*) FROM messy_sales"
+  },
+  {
+   "file": "sales",
+   "kind": "count vs sum",
+   "question": "How many orders were there for Monitor?",
+   "expected": "SELECT COUNT(*) FROM messy_sales WHERE product = 'Monitor'"
+  },
+  {
+   "file": "sales",
+   "kind": "count vs sum",
+   "question": "Which product appears in the most orders?",
+   "expected": "SELECT product FROM messy_sales GROUP BY product ORDER BY COUNT(*) DESC LIMIT 1"
+  },
+  {
+   "file": "sales",
+   "kind": "average vs total",
+   "question": "What is the average order value?",
+   "expected": "SELECT AVG(total_sales) FROM messy_sales"
+  },
+  {
+   "file": "sales",
+   "kind": "average vs total",
+   "question": "Average units per order",
+   "expected": "SELECT AVG(units_sold) FROM messy_sales"
+  },
+  {
+   "file": "sales",
+   "kind": "average vs total",
+   "question": "Average price of a laptop",
+   "expected": "SELECT AVG(unit_price) FROM messy_sales WHERE product = 'Laptop'"
+  },
+  {
+   "file": "sales",
+   "kind": "average vs total",
+   "question": "Average sales per region",
+   "expected": [
+    "SELECT region, AVG(total_sales) FROM messy_sales GROUP BY region",
+    "SELECT region, SUM(total_sales) FROM messy_sales GROUP BY region"
+   ]
+  },
+  {
+   "file": "sales",
+   "kind": "ranking",
+   "question": "Top 3 products by revenue",
+   "expected": "SELECT product, SUM(total_sales) AS s FROM messy_sales GROUP BY product ORDER BY s DESC LIMIT 3"
+  },
+  {
+   "file": "sales",
+   "kind": "ranking",
+   "question": "Which region has the lowest total sales?",
+   "expected": "SELECT region FROM messy_sales GROUP BY region ORDER BY SUM(total_sales) LIMIT 1"
+  },
+  {
+   "file": "sales",
+   "kind": "ranking",
+   "question": "What is the second best selling product by units?",
+   "expected": "SELECT product FROM messy_sales GROUP BY product ORDER BY SUM(units_sold) DESC LIMIT 1 OFFSET 1"
+  },
+  {
+   "file": "sales",
+   "kind": "ranking",
+   "question": "Rank the sales reps by total sales",
+   "expected": "SELECT sales_rep, SUM(total_sales) FROM messy_sales GROUP BY sales_rep"
+  },
+  {
+   "file": "sales",
+   "kind": "distinct",
+   "question": "How many different products are there?",
+   "expected": "SELECT COUNT(DISTINCT product) FROM messy_sales"
+  },
+  {
+   "file": "sales",
+   "kind": "distinct",
+   "question": "How many customers bought something?",
+   "expected": "SELECT COUNT(DISTINCT customer_name) FROM messy_sales"
+  },
+  {
+   "file": "sales",
+   "kind": "distinct",
+   "question": "List the cities we sell in",
+   "expected": "SELECT DISTINCT city FROM messy_sales"
+  },
+  {
+   "file": "sales",
+   "kind": "dates",
+   "question": "Total sales in February 2024",
+   "expected": "SELECT SUM(total_sales) FROM messy_sales WHERE order_date >= '2024-02-01' AND order_date < '2024-03-01'"
+  },
+  {
+   "file": "sales",
+   "kind": "dates",
+   "question": "How many orders in March?",
+   "expected": "SELECT COUNT(*) FROM messy_sales WHERE strftime('%m', order_date) = '03'"
+  },
+  {
+   "file": "sales",
+   "kind": "dates",
+   "question": "Which month had the most orders?",
+   "expected": "SELECT strftime('%Y-%m', order_date) FROM messy_sales GROUP BY 1 ORDER BY COUNT(*) DESC LIMIT 1"
+  },
+  {
+   "file": "sales",
+   "kind": "dates",
+   "question": "How many orders were placed on weekends?",
+   "expected": "SELECT COUNT(*) FROM messy_sales WHERE strftime('%w', order_date) IN ('0', '6')"
+  },
+  {
+   "file": "sales",
+   "kind": "dates",
+   "question": "How many orders came after 15 February 2024?",
+   "expected": "SELECT COUNT(*) FROM messy_sales WHERE order_date > '2024-02-15'"
+  },
+  {
+   "file": "sales",
+   "kind": "dates",
+   "question": "Total sales in the last month of the data",
+   "expected": "SELECT SUM(total_sales) FROM messy_sales WHERE strftime('%Y-%m', order_date) = (SELECT strftime('%Y-%m', MAX(order_date)) FROM messy_sales)"
+  },
+  {
+   "file": "sales",
+   "kind": "filters and spelling",
+   "question": "total sales for laptop in the north",
+   "expected": "SELECT SUM(total_sales) FROM messy_sales WHERE product = 'Laptop' AND region = 'North'"
+  },
+  {
+   "file": "sales",
+   "kind": "filters and spelling",
+   "question": "How many orders came from Delhi?",
+   "expected": [
+    "SELECT COUNT(*) FROM messy_sales WHERE city = 'Delhi'",
+    "SELECT COUNT(*) FROM messy_sales WHERE city IN ('Delhi', 'New Delhi')"
+   ]
+  },
+  {
+   "file": "sales",
+   "kind": "negation",
+   "question": "How many orders were not from the North region?",
+   "expected": "SELECT COUNT(*) FROM messy_sales WHERE region <> 'North'"
+  },
+  {
+   "file": "sales",
+   "kind": "negation",
+   "question": "How many orders are unpaid?",
+   "expected": "SELECT COUNT(*) FROM messy_sales WHERE paid = 0"
+  },
+  {
+   "file": "sales",
+   "kind": "numeric conditions",
+   "question": "How many orders had a discount?",
+   "expected": "SELECT COUNT(*) FROM messy_sales WHERE discount_pct > 0"
+  },
+  {
+   "file": "sales",
+   "kind": "numeric conditions",
+   "question": "How many orders had more than 5 units?",
+   "expected": "SELECT COUNT(*) FROM messy_sales WHERE units_sold > 5"
+  },
+  {
+   "file": "sales",
+   "kind": "numeric conditions",
+   "question": "How many orders were above 100000 in sales?",
+   "expected": "SELECT COUNT(*) FROM messy_sales WHERE total_sales > 100000"
+  },
+  {
+   "file": "sales",
+   "kind": "percent and share",
+   "question": "What percentage of total sales comes from the North region?",
+   "expected": [
+    "SELECT 100.0 * SUM(CASE WHEN region = 'North' THEN total_sales END) / SUM(total_sales) FROM messy_sales",
+    "SELECT 1.0 * SUM(CASE WHEN region = 'North' THEN total_sales END) / SUM(total_sales) FROM messy_sales"
+   ]
+  },
+  {
+   "file": "sales",
+   "kind": "percent and share",
+   "question": "What share of orders does each region have, in percent?",
+   "expected": "SELECT region, 100.0 * COUNT(*) / (SELECT COUNT(*) FROM messy_sales) FROM messy_sales GROUP BY region"
+  },
+  {
+   "file": "sales",
+   "kind": "comparison",
+   "question": "Compare total sales of North and South",
+   "expected": "SELECT region, SUM(total_sales) FROM messy_sales WHERE region IN ('North', 'South') GROUP BY region"
+  },
+  {
+   "file": "sales",
+   "kind": "comparison",
+   "question": "How much more did North sell than South in total sales?",
+   "expected": "SELECT SUM(CASE WHEN region = 'North' THEN total_sales ELSE 0 END) - SUM(CASE WHEN region = 'South' THEN total_sales ELSE 0 END) FROM messy_sales"
+  },
+  {
+   "file": "sales",
+   "kind": "derived measure",
+   "question": "Revenue per unit sold for each product",
+   "expected": [
+    "SELECT product, 1.0 * SUM(total_sales) / SUM(units_sold) FROM messy_sales GROUP BY product",
+    "SELECT product, AVG(1.0 * total_sales / units_sold) FROM messy_sales GROUP BY product"
+   ]
+  },
+  {
+   "file": "sales",
+   "kind": "derived measure",
+   "question": "Average discount for each sales rep",
+   "expected": "SELECT sales_rep, AVG(discount_pct) FROM messy_sales GROUP BY sales_rep"
+  },
+  {
+   "file": "sales",
+   "kind": "superlative row",
+   "question": "Which order had the highest sales?",
+   "expected": "SELECT order_id FROM messy_sales ORDER BY total_sales DESC LIMIT 1"
+  },
+  {
+   "file": "sales",
+   "kind": "superlative row",
+   "question": "Who is the customer with the most orders?",
+   "expected": "SELECT customer_name FROM messy_sales GROUP BY customer_name ORDER BY COUNT(*) DESC LIMIT 1"
+  },
+  {
+   "file": "sales",
+   "kind": "compared to average",
+   "question": "How many orders had above-average sales?",
+   "expected": "SELECT COUNT(*) FROM messy_sales WHERE total_sales > (SELECT AVG(total_sales) FROM messy_sales)"
+  },
+  {
+   "file": "imdb",
+   "kind": "multi-value column",
+   "question": "How many Drama movies are there?",
+   "expected": "SELECT COUNT(*) FROM messy_imdb_dataset WHERE genre LIKE '%Drama%'"
+  },
+  {
+   "file": "imdb",
+   "kind": "multi-value column",
+   "question": "Average score of Comedy movies",
+   "expected": "SELECT AVG(score) FROM messy_imdb_dataset WHERE genre LIKE '%Comedy%'"
+  },
+  {
+   "file": "imdb",
+   "kind": "multi-value column",
+   "question": "What is the most common genre?",
+   "expected": "SELECT genre_value FROM messy_imdb_dataset_genre GROUP BY genre_value ORDER BY COUNT(*) DESC LIMIT 1"
+  },
+  {
+   "file": "imdb",
+   "kind": "multi-value column",
+   "question": "How many movies are both Crime and Drama?",
+   "expected": "SELECT COUNT(*) FROM messy_imdb_dataset WHERE genre LIKE '%Crime%' AND genre LIKE '%Drama%'"
+  },
+  {
+   "file": "imdb",
+   "kind": "partial names",
+   "question": "How many movies did Spielberg direct?",
+   "expected": "SELECT COUNT(*) FROM messy_imdb_dataset WHERE director LIKE '%Spielberg%'"
+  },
+  {
+   "file": "imdb",
+   "kind": "partial names",
+   "question": "Total income of Nolan movies",
+   "expected": "SELECT SUM(income) FROM messy_imdb_dataset WHERE director LIKE '%Nolan%'"
+  },
+  {
+   "file": "imdb",
+   "kind": "superlative row",
+   "question": "What is the longest movie?",
+   "expected": "SELECT original_title FROM messy_imdb_dataset ORDER BY duration DESC LIMIT 1"
+  },
+  {
+   "file": "imdb",
+   "kind": "superlative row",
+   "question": "Which movie has the lowest score?",
+   "expected": [
+    "SELECT original_title FROM messy_imdb_dataset WHERE score = (SELECT MIN(score) FROM messy_imdb_dataset)",
+    "SELECT 'Per qualche dollaro in più'",
+    "SELECT 'Jodaeiye Nader az Simin'",
+    "SELECT 'Singin'' in the Rain'"
+   ]
+  },
+  {
+   "file": "imdb",
+   "kind": "numeric conditions",
+   "question": "How many movies are longer than 3 hours?",
+   "expected": "SELECT COUNT(*) FROM messy_imdb_dataset WHERE duration > 180"
+  },
+  {
+   "file": "imdb",
+   "kind": "dates",
+   "question": "How many movies were released between 2000 and 2010?",
+   "expected": "SELECT COUNT(*) FROM messy_imdb_dataset WHERE strftime('%Y', release_year) BETWEEN '2000' AND '2010'"
+  },
+  {
+   "file": "imdb",
+   "kind": "dates",
+   "question": "Highest grossing movie of the 1990s",
+   "expected": "SELECT original_title FROM messy_imdb_dataset WHERE strftime('%Y', release_year) BETWEEN '1990' AND '1999' ORDER BY income DESC LIMIT 1"
+  },
+  {
+   "file": "imdb",
+   "kind": "dates",
+   "question": "Average score per decade",
+   "expected": [
+    "SELECT (CAST(strftime('%Y', release_year) AS INTEGER) / 10) * 10 AS d, AVG(score) FROM messy_imdb_dataset WHERE release_year IS NOT NULL GROUP BY d",
+    "SELECT (CAST(strftime('%Y', release_year) AS INTEGER) / 10) * 10 AS d, AVG(score) FROM messy_imdb_dataset GROUP BY d"
+   ]
+  },
+  {
+   "file": "imdb",
+   "kind": "ranking",
+   "question": "Which country has the highest average score?",
+   "expected": "SELECT country FROM messy_imdb_dataset GROUP BY country ORDER BY AVG(score) DESC LIMIT 1"
+  },
+  {
+   "file": "imdb",
+   "kind": "percent and share",
+   "question": "What percentage of movies are rated R?",
+   "expected": [
+    "SELECT 100.0 * SUM(content_rating = 'R') / COUNT(*) FROM messy_imdb_dataset",
+    "SELECT 1.0 * SUM(content_rating = 'R') / COUNT(*) FROM messy_imdb_dataset"
+   ]
+  },
+  {
+   "file": "imdb",
+   "kind": "compared to average",
+   "question": "How many movies have more votes than average?",
+   "expected": "SELECT COUNT(*) FROM messy_imdb_dataset WHERE votes > (SELECT AVG(votes) FROM messy_imdb_dataset)"
+  },
+  {
+   "file": "imdb",
+   "kind": "count vs sum",
+   "question": "How many votes did The Godfather get?",
+   "expected": "SELECT votes FROM messy_imdb_dataset WHERE original_title = 'The Godfather'"
+  },
+  {
+   "file": "imdb",
+   "kind": "top per group",
+   "question": "Highest rated movie in each country",
+   "expected": [
+    "SELECT country, original_title FROM (SELECT country, original_title, ROW_NUMBER() OVER (PARTITION BY country ORDER BY score DESC, original_title ASC) r FROM messy_imdb_dataset) WHERE r = 1",
+    "SELECT country, original_title FROM (SELECT country, original_title, ROW_NUMBER() OVER (PARTITION BY country ORDER BY score DESC, original_title DESC) r FROM messy_imdb_dataset) WHERE r = 1",
+    "SELECT country, original_title FROM messy_imdb_dataset m WHERE score = (SELECT MAX(score) FROM messy_imdb_dataset x WHERE x.country IS m.country)"
+   ]
+  },
+  {
+   "file": "employees",
+   "kind": "average vs total",
+   "question": "What is the average salary of employees with a known salary?",
+   "expected": "SELECT AVG(salary) FROM messy_employees_employees WHERE salary IS NOT NULL"
+  },
+  {
+   "file": "employees",
+   "kind": "count vs sum",
+   "question": "How many employees are in each department?",
+   "expected": "SELECT department, COUNT(*) FROM messy_employees_employees GROUP BY department"
+  },
+  {
+   "file": "employees",
+   "kind": "ranking",
+   "question": "Which department has the highest total salary?",
+   "expected": "SELECT department FROM messy_employees_employees GROUP BY department ORDER BY SUM(salary) DESC LIMIT 1"
+  },
+  {
+   "file": "employees",
+   "kind": "dates",
+   "question": "How many employees joined after 2020?",
+   "expected": "SELECT COUNT(*) FROM messy_employees_employees WHERE strftime('%Y', joining_date) > '2020'"
+  },
+  {
+   "file": "employees",
+   "kind": "negation",
+   "question": "How many employees are not active?",
+   "expected": "SELECT COUNT(*) FROM messy_employees_employees WHERE active = 0"
+  },
+  {
+   "file": "employees",
+   "kind": "filters and spelling",
+   "question": "What is the Q1 target of the sales department?",
+   "expected": "SELECT q1_target FROM messy_employees_targets WHERE department = 'Sales'"
+  },
+  {
+   "file": "employees",
+   "kind": "ranking",
+   "question": "Rank the departments by headcount",
+   "expected": [
+    "SELECT department, COUNT(*) FROM messy_employees_employees GROUP BY department",
+    "SELECT department, COUNT(*) FROM messy_employees_employees WHERE active = 1 GROUP BY department"
+   ]
+  },
+  {
+   "file": "inventory",
+   "kind": "count vs sum",
+   "question": "How many units of Masala Chai are in stock?",
+   "expected": "SELECT SUM(stock_qty) FROM eval_inventory WHERE item_name = 'Masala Chai'"
+  },
+  {
+   "file": "inventory",
+   "kind": "count vs sum",
+   "question": "Total stock per category",
+   "expected": "SELECT category, SUM(stock_qty) FROM eval_inventory GROUP BY category"
+  },
+  {
+   "file": "inventory",
+   "kind": "ranking",
+   "question": "Which category has the highest average margin?",
+   "expected": "SELECT category FROM eval_inventory GROUP BY category ORDER BY AVG(margin_pct) DESC LIMIT 1"
+  },
+  {
+   "file": "inventory",
+   "kind": "negation",
+   "question": "How many items are discontinued?",
+   "expected": "SELECT COUNT(*) FROM eval_inventory WHERE discontinued = 1"
+  },
+  {
+   "file": "inventory",
+   "kind": "dates",
+   "question": "How many items were restocked in June 2024?",
+   "expected": "SELECT COUNT(*) FROM eval_inventory WHERE strftime('%Y-%m', last_restock) = '2024-06'"
+  },
+  {
+   "file": "inventory",
+   "kind": "average vs total",
+   "question": "Average unit cost of Dairy items",
+   "expected": "SELECT AVG(unit_cost) FROM eval_inventory WHERE category = 'Dairy'"
+  },
+  {
+   "file": "inventory",
+   "kind": "partial names",
+   "question": "How much stock is there of Cafe Latte?",
+   "expected": "SELECT SUM(stock_qty) FROM eval_inventory WHERE item_name = 'Café Latte'"
+  },
+  {
+   "file": "tickets",
+   "kind": "negation",
+   "question": "How many tickets are unresolved?",
+   "expected": "SELECT COUNT(*) FROM eval_tickets WHERE resolved = 0"
+  },
+  {
+   "file": "tickets",
+   "kind": "average vs total",
+   "question": "Average hours spent per priority",
+   "expected": "SELECT priority, AVG(hours_spent) FROM eval_tickets GROUP BY priority"
+  },
+  {
+   "file": "tickets",
+   "kind": "count vs sum",
+   "question": "Total hours spent on High priority tickets",
+   "expected": "SELECT SUM(hours_spent) FROM eval_tickets WHERE priority = 'High'"
+  },
+  {
+   "file": "tickets",
+   "kind": "dates",
+   "question": "How many tickets were opened in October 2024?",
+   "expected": "SELECT COUNT(*) FROM eval_tickets WHERE strftime('%Y-%m', opened) = '2024-10'"
+  },
+  {
+   "file": "tickets",
+   "kind": "ranking",
+   "question": "Which priority has the most tickets?",
+   "expected": "SELECT priority FROM eval_tickets GROUP BY priority ORDER BY COUNT(*) DESC LIMIT 1"
+  },
+  {
+   "file": "tickets",
+   "kind": "percent and share",
+   "question": "What percentage of tickets are resolved?",
+   "expected": [
+    "SELECT 100.0 * SUM(resolved) / COUNT(*) FROM eval_tickets",
+    "SELECT 1.0 * SUM(resolved) / COUNT(*) FROM eval_tickets"
+   ]
+  },
+  {
+   "file": "tickets",
+   "kind": "superlative row",
+   "question": "Which ticket took the most hours?",
+   "expected": [
+    "SELECT ticket_id FROM eval_tickets WHERE hours_spent = (SELECT MAX(hours_spent) FROM eval_tickets)",
+    "SELECT '0020'",
+    "SELECT '0023'"
+   ]
+  },
+  {
+   "file": "customers",
+   "kind": "multi-value column",
+   "question": "How many customers have the vip tag?",
+   "expected": [
+    "SELECT COUNT(DISTINCT row_id) FROM customers_tags WHERE tags_value = 'vip'",
+    "SELECT COUNT(*) FROM customers WHERE tags LIKE '%vip%'"
+   ]
+  },
+  {
+   "file": "customers",
+   "kind": "multi-value column",
+   "question": "Which tag is the most common?",
+   "expected": "SELECT tags_value FROM customers_tags GROUP BY tags_value ORDER BY COUNT(*) DESC LIMIT 1"
+  },
+  {
+   "file": "customers",
+   "kind": "count vs sum",
+   "question": "How many customers are there per city?",
+   "expected": "SELECT address_city, COUNT(*) FROM customers GROUP BY address_city"
+  },
+  {
+   "file": "customers",
+   "kind": "dates",
+   "question": "How many customers signed up after June 2023?",
+   "expected": "SELECT COUNT(*) FROM customers WHERE signup >= '2023-07-01'"
+  },
+  {
+   "file": "customers",
+   "kind": "distinct",
+   "question": "How many different cities do customers come from?",
+   "expected": "SELECT COUNT(DISTINCT address_city) FROM customers"
+  },
+  {
+   "file": "products",
+   "kind": "superlative row",
+   "question": "What is the most expensive product?",
+   "expected": "SELECT product FROM products ORDER BY list_price DESC LIMIT 1"
+  },
+  {
+   "file": "products",
+   "kind": "average vs total",
+   "question": "Average list price per category",
+   "expected": "SELECT category, AVG(list_price) FROM products GROUP BY category"
+  },
+  {
+   "file": "products",
+   "kind": "numeric conditions",
+   "question": "How many products cost more than 3000?",
+   "expected": "SELECT COUNT(*) FROM products WHERE list_price > 3000"
+  },
+  {
+   "file": "products",
+   "kind": "filters and spelling",
+   "question": "What is the price of a laptop?",
+   "expected": "SELECT list_price FROM products WHERE product = 'Laptop'"
+  },
+  {
+   "file": "products",
+   "kind": "comparison",
+   "question": "Compare the prices of Mouse and Keyboard",
+   "expected": [
+    "SELECT product, list_price FROM products WHERE product IN ('Mouse', 'Keyboard')",
+    "SELECT MAX(CASE WHEN product = 'Mouse' THEN list_price END), MAX(CASE WHEN product = 'Keyboard' THEN list_price END) FROM products"
+   ]
+  }
+ ]
+}

@@ -63,8 +63,8 @@ SAMPLE_DATASETS = {
 }
 
 MODELS = {
-    "qwen2.5:7b-instruct (GPU)": dict(MODEL_PROFILES["gpu"]),
-    "qwen2.5:3b-instruct (GPU)": dict(MODEL_PROFILES["cpu"]),
+    f"{MODEL_PROFILES['gpu']['model']} (GPU)": dict(MODEL_PROFILES["gpu"]),
+    f"{MODEL_PROFILES['cpu']['model']} (GPU)": dict(MODEL_PROFILES["cpu"]),
 }
 CPU_SETTINGS = {**MODEL_PROFILES["cpu"], "num_gpu": 0}
 CPU_LATENCY_QUESTIONS = 10

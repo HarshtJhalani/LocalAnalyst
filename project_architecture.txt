@@ -140,14 +140,76 @@ Applied automatically:
   otherwise they are kept and flagged, since they can be real rows
 - commas are removed from numbers only as thousands separators
   (1,234,567 or 12,34,567)
+- dates typed in many formats in one column: when no single format
+  reaches the 95 % rule but at least half the values match a known
+  format, the rest are read one by one (ordinals, "of", foreign month
+  names and stray spaces removed first; day-first or month-first
+  follows the column's clear cases; a two-digit year never lands in
+  the future). Each guess is listed in a "dates_guessed" flag
+- typos inside numbers, in a column where at least half the values
+  parse and at most 20 % do not: '178c' -> 178, '$ 4o8,035,783' ->
+  408035783, '9,.0' / '8..8' / '8:8' / '++8.7' / '8.7.' / '8,7e-0'.
+  Each repair is listed in a "numbers_guessed" flag; the review can
+  set them back to empty. Words ('Inf', 'Not Applicable') stay null.
+  A whole column of '12,5' is a convention, not typos: it still goes
+  to the decimal-comma flag. Leading-zero IDs are whole numbers only
+  (00123), so '08.9' is a number
+- list columns: text cells holding several short, repeating values
+  ("Crime, Drama") get a second table <table>_<column>(row_id, <column>_value)
+  with one row per value; the cleaned table gains row_id (1, 2, 3 ...;
+  _row_id if the file already has a row_id). The original column stays
 
-Flagged, never changed:
+Flagged, never changed without the user's choice:
 - missing values, outliers, ambiguous dates (03/04/2024),
   similar but different categories, partly numeric columns,
   numbers with a decimal comma (12,5), identifiers with leading
   zeros, constant columns, duplicate rows in a table with no key
 
 The original values are always kept as a separate raw table.
+
+### Review step (cleaning_review.py)
+- After upload the dataset's review is "pending" when a flag needs a
+  decision. The UI shows the decisions before the first question;
+  the API serves them at GET /datasets/{id}/review.
+- Reviewable flags and their options (default = the automatic result,
+  so no choice means no change):
+  missing_values      leave | fill_median | fill_mean | fill_zero
+                      (numbers) | fill_unknown | fill_most_common
+                      (text) | drop_rows
+  outliers            keep | set_null | drop_rows
+  similar_categories  keep | merge, with the spelling each variant
+                      becomes ({variant: spelling}, editable)
+  partly_numeric,
+  decimal_comma       keep_text | convert (non-numbers become null;
+                      1.007.598 is read as dot thousands)
+  dates_guessed       keep_dates | text
+  list_column         split | keep
+- Each item has a suggested option and a one-line reason, decided
+  from counts and types only (e.g. a number column with up to 10 %
+  missing -> fill_median, more -> leave; text -> fill_unknown).
+- POST /datasets/{id}/review cleans the original upload again with
+  the choices (stored in cleaning_choices.json) and rebuilds
+  dataset.db, profile and schema. Unknown columns or options are
+  refused (400); a choice set that removes every row is refused and
+  the previous cleaning is restored. Answers already in chats are
+  not re-run.
+- From the chat: "fill <column> with the median / mean / 0 / most common /
+  Unknown" or "drop rows with missing <column>" is recognised by rule
+  (message_intent.cleaning_request, before the write check) and mapped
+  to the same review option. The first reply (status "confirm") states
+  the change and offers one button, "Apply: ..."; that message applies it
+  (status "cleaned") by cleaning the original upload again with the
+  stored choices plus this one. Options must fit the column (no median
+  for text); "delete rows where region is North" stays a refused write.
+  Any word order works ("fill median age in rows where age is empty").
+  0, null, empty, blank and similar words all mean "missing": a request
+  that names 0 ("where age is 0") also fills the column's 0s (stored as
+  choice "zeros_as_missing", kept when the review is applied later); one
+  that does not name 0 leaves 0s alone. The confirm reply says when a
+  column has no 0s.
+- Why rules and not the model: a local 7B model sees only a sample,
+  can invent values and gives different results per run; the code
+  changes the data, the user makes the judgment calls.
 
 ## 7. Storage (02_sqlite_profiling)
 - One SQLite database per uploaded file; one table per sheet, plus
@@ -195,8 +257,42 @@ The original values are always kept as a separate raw table.
   count and every expected row present, whatever the column names,
   column order or row order (rounding tolerated).
 - Dev-set accuracy (16 questions, first attempt): see section 13.
+- Top value within each group ("the most released genre for every
+  year", "top 2 directors in each country"): found by rule, a
+  superlative plus per / each / every / within, but not a sort order
+  ("highest first"). The question gets a worked ROW_NUMBER() OVER
+  (PARTITION BY ...) pattern under it; SQL without OVER(...) is sent
+  back once with the same pattern (attempt outcome "shape_check").
+  Small models otherwise list every pair or one overall top row. Ties
+  within a group keep one row, picked arbitrarily.
+- Two more one-time corrections before the SQL runs (shared with the
+  one above, so at most one per question):
+  - COUNT(...) grouped by a column with a different value on every
+    row ("most watched movie" -> COUNT per title, always 1): the model
+    is told to ORDER BY a number column of that table, which it names.
+  - a chart was asked for ("plot ...") but the SQL ends in LIMIT 1:
+    the model is told to return every group, sorted.
+  - after it runs: a one- or two-column listing (no grouping or
+    aggregate) whose names repeat -> each name once, with COUNT(*).
+- A pie asked for with more than 6 parts shows the 5 largest plus
+  "Other"; the grouped names are stored with the turn's chart
+  (other_labels). A follow-up that says "other" gets that phrase
+  replaced by "<column> IN (...)" before the rewrite: as background
+  context the 7B model ignored the names, and with the word "other"
+  left in it wrote NOT IN.
+- Values that mean the same thing ("Unrated" / "Not Rated"), which no
+  spelling rule can see: per category column (3-30 values) the model
+  names pairs, each pair is asked again as a yes/no question, both
+  values must exist, and a column whose "groups" are large (over 3
+  values, or over half the column) is dropped as a misreading. Stored in
+  synonyms.json; shown as a review item ("same_meaning"); merged only
+  when the user applies it. Without a model there is no such item.
+- Look-alike values: the correct spelling in each group is picked by
+  one short model call per dataset (spellings.json), only from the
+  group's own values; without a model the rule's pick stays. The user
+  confirms it in the review.
 
-## 10. Guardrails and self-correction (05_self_correction_guardrails)
+## 10.Guardrails and self-correction (05_self_correction_guardrails)
 - Upload: safe_filename() (no folders, no '..'), max 1,000,000 rows and
   200 columns per table, plus file type and 50 MB limit.
 - Question: 3-500 characters, control characters removed, prompt-
@@ -272,14 +368,20 @@ How a chat message is sorted, then how chats and follow-ups are stored.
   2. names a column (or a part of one longer than 2 letters) -> data;
      words the sorting relies on ("last", "change", "chart", filler
      words) never count as a column name on their own
-  3. a chart type plus a reference back ("make it a pie chart",
+  3. only stored rows asked for ("top 5 rows", "last 10 records",
+     "show the data"; every word from a small list) -> row_preview:
+     SELECT * FROM the uploaded table LIMIT n (OFFSET for "last"),
+     through check_sql + execute_sql, shown as a table with a fixed
+     sentence; no model call. After rule 2, so "first 5 rows by
+     region" is a data question
+  4. a chart type plus a reference back ("make it a pie chart",
      "change it to bars") ->
      chart_change: the last answered turn's stored SQL is re-run
      through check_sql + execute_sql (read-only, no model call) and
      drawn as asked; with no earlier answer -> clarify
-  4. "that's wrong" without a change -> feedback -> clarify
-  5. only filler words ("what", "ok", "?") -> vague -> clarify
-  6. everything else -> data
+  5. "that's wrong" without a change -> feedback -> clarify
+  6. only filler words ("what", "ok", "?") -> vague -> clarify
+  7. everything else -> data
 - A clarify reply has no SQL. In an existing chat it is stored as a
   turn; as the first message of a new chat it starts no chat.
 
@@ -343,7 +445,7 @@ How a chat message is sorted, then how chats and follow-ups are stored.
 ## 14. API (src/api/, src/main/main.py)
 - Startup: logging, datasets/ folder, Ollama check, model selection
   (MODEL_PROFILE). Fails fast if Ollama is down or a model is missing.
-- Swagger UI: http://127.0.0.1:8000/docs. Postman: postman/.
+- Swagger UI: http://127.0.0.1:8765/docs. Postman: postman/.
 - Plain FastAPI parameters (File, Body, Query) and dict responses, no
   Pydantic models (design rules, section 3).
 - Setup and run steps: README.md.
@@ -355,6 +457,12 @@ POST   /datasets                                upload -> clean -> SQLite -> pro
 GET    /datasets                                list, newest first
 GET    /datasets/{id}?include_profile=false     status, cleaning report, schema
                                                 (profile unless include_profile=false)
+GET    /datasets/{id}/preview?rows=5            first rows, description, starter
+                                                questions (no model call)
+GET    /datasets/{id}/review                    cleaning decisions: options,
+                                                suggestion, last choice
+POST   /datasets/{id}/review                    {choices} | {use_suggestions} | {skip}
+                                                -> re-clean the original file
 DELETE /datasets/{id}                           permanent
 POST   /datasets/{id}/ask                       {question, chat_id?, include_figures?}
                                                 -> SQL, rows, chart, summary, caveats,
